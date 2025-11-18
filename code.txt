@@ -1,5 +1,5 @@
-# FIXED 2D MPM WITH A-SHAPED MAT FOUNDATION
-# Corrected particle generation for accurate bearing capacity
+# CORRECTED 2D MPM WITH A-SHAPED MAT FOUNDATION
+# Fixed particle generation, volume calculation, and reaction force computation
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 print("="*70)
-print("FIXED 2D MPM - A-SHAPED MAT FOUNDATION")
-print("Corrected Foundation Discretization")
+print("CORRECTED 2D MPM - A-SHAPED MAT FOUNDATION")
+print("Proper Foundation Discretization and Force Calculation")
 print("="*70)
 
 # ============================================================
@@ -210,6 +210,7 @@ class MPM2D_AShaped:
         # Foundation tracking
         self.foundation_y_base = None  # Base position of foundation
         self.foundation_velocity = 0  # Current prescribed velocity
+        self.foundation_indices = []  # Track foundation particle indices
 
         # Grid arrays
         self.reset_grid()
@@ -218,10 +219,11 @@ class MPM2D_AShaped:
         self.time = 0
         self.step_count = 0
 
-        print(f"✓ MPM Solver with A-shaped foundation initialized")
-        print(f"  Domain: {self.Lx}m × {self.Ly}m")
-        print(f"  Grid: {nx}×{ny} = {self.nnx}×{self.nny} nodes")
-        print(f"  Foundation area: {foundation_geometry['area']} m²")
+        print(f"MPM Solver with A-shaped foundation initialized")
+        print(f"  Domain: {self.Lx}m x {self.Ly}m")
+        print(f"  Grid: {nx}x{ny} = {self.nnx}x{self.nny} nodes")
+        print(f"  Cell size: {self.dx:.3f}m x {self.dy:.3f}m")
+        print(f"  Foundation area: {foundation_geometry['area']} m^2")
 
     def reset_grid(self):
         n_nodes = self.nnx * self.nny
@@ -239,9 +241,12 @@ class MPM2D_AShaped:
         x_min, x_max = x_range
         y_min, y_max = y_range
 
-        dx_p = self.dx / np.sqrt(ppc)
-        dy_p = self.dy / np.sqrt(ppc)
+        # Particles per cell in each direction
+        ppc_1d = int(np.sqrt(ppc))
+        dx_p = self.dx / ppc_1d
+        dy_p = self.dy / ppc_1d
 
+        # Volume per particle (2D: area per particle)
         V_p = self.dx * self.dy / ppc
         m_p = self.rho * V_p
 
@@ -266,12 +271,19 @@ class MPM2D_AShaped:
                 self.particles.append(mp)
                 count += 1
 
-        print(f"✓ Added {count} soil particles")
+        print(f"Added {count} soil particles")
+        print(f"  Soil particle volume: {V_p:.6f} m^2")
+        print(f"  Soil particle mass: {m_p:.4f} kg")
 
     def add_ashaped_foundation(self, y_position, thickness=0.5, ppc=4,
                               foundation_density=7850):
         """
         Add A-shaped mat foundation as rigid material points
+
+        CORRECTED IMPLEMENTATION:
+        - Properly maps 2D A-shape footprint to particle positions
+        - Uses correct volume calculation for 2D plane strain
+        - Foundation particles are distributed across the A-shaped footprint
 
         Parameters:
         - y_position: vertical position (m) of the base of the foundation
@@ -281,76 +293,113 @@ class MPM2D_AShaped:
         """
         geom = self.foundation_geom
 
-        # Determine foundation particle spacing
-        dx_p = self.dx / np.sqrt(ppc)
-        dy_p = self.dy / np.sqrt(ppc)
+        # Particles per cell in each direction
+        ppc_1d = int(np.sqrt(ppc))
+        dx_p = self.dx / ppc_1d
+        dy_p = self.dy / ppc_1d
 
-        # CRITICAL FIX: Create particles across the full foundation extent
-        # The foundation extends 10m in both x and y directions
-        # We place it at elevation y_position as a thin mat
-        
-        # Foundation bounds in global coordinates
-        x_foundation_min = (self.x_max - geom['width']) / 2  # Center in domain
+        # Foundation bounds in global coordinates (centered in domain)
+        x_foundation_min = (self.x_min + self.x_max - geom['width']) / 2
         x_foundation_max = x_foundation_min + geom['width']
-        
-        # Create a grid of potential particle positions across the foundation area
+
+        # For 2D plane strain analysis, we model the foundation footprint
+        # X_global corresponds to X_local in the A-shape (0-10m)
+        # Y_global is vertical elevation
+
+        # Create grid of potential particle positions across the foundation footprint
         x_coords = np.arange(x_foundation_min + dx_p/2, x_foundation_max, dx_p)
-        
-        # For a mat foundation, we create a thin layer at the specified elevation
-        # Multiple layers through thickness for better representation
-        n_layers = max(1, int(thickness / dy_p))
-        y_layers = np.linspace(y_position, y_position + thickness, n_layers)
-        
-        # CRITICAL FIX: Correct volume per particle
-        # Each particle represents a small column of the mat
-        V_p_per_layer = dx_p * dx_p * (thickness / n_layers)  # Volume per particle per layer
-        m_p = foundation_density * V_p_per_layer
+
+        # CRITICAL FIX: For a 2D analysis, we need to determine which X positions
+        # are within the A-shape. We use a representative Y_local cross-section.
+        # Using multiple Y_local samples and averaging gives the effective width.
+
+        # Sample multiple cross-sections through the A-shape to get proper coverage
+        y_local_samples = np.linspace(0.5, 9.5, 19)  # Sample y_local from 0.5 to 9.5
+
+        # Number of layers through thickness
+        n_layers = max(1, int(np.ceil(thickness / dy_p)))
+        if n_layers == 0:
+            n_layers = 1
+
+        # Elevation layers for the foundation
+        if n_layers == 1:
+            y_elevations = [y_position + thickness/2]
+        else:
+            y_elevations = np.linspace(y_position + dy_p/2,
+                                       y_position + thickness - dy_p/2,
+                                       n_layers)
+
+        # Volume per particle: each particle represents a portion of the mat
+        # In 2D plane strain, the "volume" is actually area (with unit depth)
+        V_p = dx_p * (thickness / n_layers)
+        m_p = foundation_density * V_p
 
         count = 0
         foundation_particles_y = []
-        
-        for y in y_layers:
+        start_idx = len(self.particles)
+
+        # CORRECTED LOOP: Proper 2D discretization
+        for y_elev in y_elevations:
             for x in x_coords:
-                # Transform to local foundation coordinates (0-10m range)
-                x_local = x - x_foundation_min  # Transform x to local (0-10)
-                
-                # Check across the foundation's y-extent in local coordinates
-                # Sample multiple y positions along the foundation length
-                y_samples = np.arange(0, geom['length'], dy_p)
-                
-                for y_local in y_samples:
-                    # Check if this (x_local, y_local) point is inside the A-shape
+                # Transform to local foundation coordinates
+                x_local = x - x_foundation_min
+
+                # Check if this x_local is inside the A-shape
+                # We check across multiple y_local positions for better accuracy
+                # A point is included if it's inside the A-shape for most y_local values
+                inside_count = 0
+                for y_local in y_local_samples:
                     if is_inside_ashaped_foundation(x_local, y_local, geom):
-                        # Map the local y to global y (foundation extends horizontally)
-                        # The particle is at elevation y (the mat elevation)
-                        mp = MaterialPoint(
-                            x=x,  # Global x
-                            y=y,  # Global y (elevation)
-                            vx=0.0, vy=0.0,
-                            mass=m_p, 
-                            volume=V_p_per_layer, 
-                            volume0=V_p_per_layer,
-                            sxx=0.0, syy=0.0, sxy=0.0,
-                            exx=0.0, eyy=0.0, exy=0.0,
-                            material_id=1  # Foundation
-                        )
-                        self.particles.append(mp)
-                        foundation_particles_y.append(y)
-                        count += 1
+                        inside_count += 1
+
+                # Include this x position if it's inside for at least 30% of y_local samples
+                # This gives an "effective width" representation
+                if inside_count >= len(y_local_samples) * 0.3:
+                    mp = MaterialPoint(
+                        x=x,
+                        y=y_elev,
+                        vx=0.0, vy=0.0,
+                        mass=m_p,
+                        volume=V_p,
+                        volume0=V_p,
+                        sxx=0.0, syy=0.0, sxy=0.0,
+                        exx=0.0, eyy=0.0, exy=0.0,
+                        material_id=1  # Foundation
+                    )
+                    self.particles.append(mp)
+                    foundation_particles_y.append(y_elev)
+                    count += 1
+
+        # Store foundation particle indices
+        self.foundation_indices = list(range(start_idx, len(self.particles)))
 
         # Store foundation base position
         if foundation_particles_y:
             self.foundation_y_base = y_position
             foundation_y_mean = np.mean(foundation_particles_y)
+
+            # Calculate effective foundation width
+            foundation_x = [self.particles[i].x for i in self.foundation_indices]
+            effective_width = max(foundation_x) - min(foundation_x) if foundation_x else 0
         else:
             self.foundation_y_base = y_position
             foundation_y_mean = y_position + thickness / 2
+            effective_width = 0
             print("WARNING: No foundation particles added! Check geometry and parameters.")
+            print(f"  x_foundation_min: {x_foundation_min}, x_foundation_max: {x_foundation_max}")
+            print(f"  Domain: [{self.x_min}, {self.x_max}]")
 
-        print(f"✓ Added {count} A-shaped foundation particles")
+        print(f"Added {count} A-shaped foundation particles")
         print(f"  Foundation base at y = {self.foundation_y_base:.3f} m")
         print(f"  Foundation mean y = {foundation_y_mean:.3f} m")
-        print(f"  Particles per layer: ~{count/n_layers:.0f}")
+        print(f"  Effective width = {effective_width:.2f} m")
+        print(f"  Layers: {n_layers}, Particles per layer: {count//n_layers if n_layers > 0 else 0}")
+        print(f"  Foundation particle volume: {V_p:.6f} m^2")
+        print(f"  Foundation particle mass: {m_p:.4f} kg")
+
+        # Calculate total foundation mass
+        total_mass = sum(self.particles[i].mass for i in self.foundation_indices)
+        print(f"  Total foundation mass: {total_mass:.2f} kg")
 
         # Visualize foundation particles
         self._visualize_foundation()
@@ -371,10 +420,11 @@ class MPM2D_AShaped:
             ax.scatter(sx, sy, s=1, c='brown', alpha=0.3, label='Soil')
 
         fx, fy = zip(*foundation)
-        ax.scatter(fx, fy, s=5, c='red', marker='s', alpha=0.8, label=f'Foundation ({len(foundation)} particles)')
+        ax.scatter(fx, fy, s=8, c='red', marker='s', alpha=0.8,
+                   label=f'Foundation ({len(foundation)} particles)')
 
         # Show domain bounds
-        ax.axhline(y=self.foundation_y_base, color='blue', linestyle='--', 
+        ax.axhline(y=self.foundation_y_base, color='blue', linestyle='--',
                    alpha=0.5, label=f'Foundation base (y={self.foundation_y_base:.1f}m)')
 
         ax.set_xlabel('X (m)')
@@ -383,25 +433,32 @@ class MPM2D_AShaped:
         ax.legend()
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
-        
+
         # Set reasonable axis limits
-        ax.set_xlim(0, self.x_max)
+        ax.set_xlim(self.x_min, self.x_max)
         ax.set_ylim(0, min(self.y_max, self.foundation_y_base + 5))
-        
+
         plt.tight_layout()
-        plt.savefig('ashaped_discretization_fixed.png', dpi=150, bbox_inches='tight')
+        plt.savefig('ashaped_discretization_corrected.png', dpi=150, bbox_inches='tight')
         plt.close()
-        print("✓ Foundation visualization saved: ashaped_discretization_fixed.png")
+        print("Foundation visualization saved: ashaped_discretization_corrected.png")
 
     def linear_shape(self, x, x_node, h):
+        """Linear shape function and derivative"""
         xi = (x - x_node) / h
         if abs(xi) > 1:
-            return 0, 0
-        N = 1 - abs(xi)
-        dN = -np.sign(xi) / h if xi != 0 else 0
+            return 0.0, 0.0
+        N = 1.0 - abs(xi)
+        if xi > 0:
+            dN = -1.0 / h
+        elif xi < 0:
+            dN = 1.0 / h
+        else:
+            dN = 0.0
         return N, dN
 
     def get_shape_functions(self, mp):
+        """Get shape functions and derivatives for a material point"""
         i = int((mp.x - self.x_min) / self.dx)
         j = int((mp.y - self.y_min) / self.dy)
         i = max(0, min(i, self.nx - 1))
@@ -436,11 +493,13 @@ class MPM2D_AShaped:
         return nodes, np.array(N_vals), np.array(dNdx_vals), np.array(dNdy_vals)
 
     def compute_timestep(self):
+        """Compute stable timestep based on CFL condition"""
         c = np.sqrt(self.K / self.rho)
-        return 0.5 * min(self.dx, self.dy) / c
+        dt = 0.5 * min(self.dx, self.dy) / c
+        return dt
 
     def tresca_return_mapping(self, mp):
-        """Tresca yield for soil only"""
+        """Tresca yield criterion with return mapping for soil only"""
         if mp.material_id != 0:
             return
 
@@ -449,16 +508,24 @@ class MPM2D_AShaped:
 
         if f > 0:
             s_mean = (s1 + s2) / 2
-            scale = 2 * self.su / abs(s1 - s2)
+
+            # Avoid division by zero
+            diff = abs(s1 - s2)
+            if diff < 1e-10:
+                return
+
+            scale = 2 * self.su / diff
 
             s1_new = s_mean + (s1 - s_mean) * scale
             s2_new = s_mean + (s2 - s_mean) * scale
 
+            # Transform back to Cartesian stresses
             theta = 0.5 * np.arctan2(2*mp.sxy, mp.sxx - mp.syy)
-            mp.sxx = s_mean + (s1_new - s_mean) * np.cos(theta)**2 + \
-                              (s2_new - s_mean) * np.sin(theta)**2
-            mp.syy = s_mean + (s1_new - s_mean) * np.sin(theta)**2 + \
-                              (s2_new - s_mean) * np.cos(theta)**2
+            c2 = np.cos(theta)**2
+            s2_theta = np.sin(theta)**2
+
+            mp.sxx = s_mean + (s1_new - s_mean) * c2 + (s2_new - s_mean) * s2_theta
+            mp.syy = s_mean + (s1_new - s_mean) * s2_theta + (s2_new - s_mean) * c2
             mp.sxy *= scale
 
     def mpm_step(self, dt):
@@ -467,7 +534,7 @@ class MPM2D_AShaped:
         # Reset grid
         self.reset_grid()
 
-        # P2G - Mass and momentum
+        # P2G - Mass and momentum transfer
         for mp in self.particles:
             nodes, N, dNdx, dNdy = self.get_shape_functions(mp)
             for k, node in enumerate(nodes):
@@ -482,14 +549,14 @@ class MPM2D_AShaped:
         grid_vx[active] = self.grid_momentum_x[active] / self.grid_mass[active]
         grid_vy[active] = self.grid_momentum_y[active] / self.grid_mass[active]
 
-        # Internal forces
+        # Internal forces from stress divergence
         for mp in self.particles:
             nodes, N, dNdx, dNdy = self.get_shape_functions(mp)
             for k, node in enumerate(nodes):
                 self.grid_force_x[node] -= mp.volume * (mp.sxx * dNdx[k] + mp.sxy * dNdy[k])
                 self.grid_force_y[node] -= mp.volume * (mp.sxy * dNdx[k] + mp.syy * dNdy[k])
 
-        # Gravity (soil only)
+        # Gravity (soil only - foundation uses prescribed motion)
         g = 9.81
         for mp in self.particles:
             if mp.material_id == 0:  # Soil only
@@ -497,7 +564,7 @@ class MPM2D_AShaped:
                 for k, node in enumerate(nodes):
                     self.grid_force_y[node] -= N[k] * mp.mass * g
 
-        # Update momentum
+        # Update grid momentum
         self.grid_momentum_x[active] += dt * self.grid_force_x[active]
         self.grid_momentum_y[active] += dt * self.grid_force_y[active]
         grid_vx[active] = self.grid_momentum_x[active] / self.grid_mass[active]
@@ -507,24 +574,27 @@ class MPM2D_AShaped:
         # Bottom: fixed
         for i in range(self.nnx):
             node = self.node_index(i, 0)
-            grid_vx[node] = 0
-            grid_vy[node] = 0
+            grid_vx[node] = 0.0
+            grid_vy[node] = 0.0
 
-        # Sides: roller
+        # Sides: roller (fixed in x, free in y)
         for j in range(self.nny):
-            grid_vx[self.node_index(0, j)] = 0
-            grid_vx[self.node_index(self.nnx-1, j)] = 0
+            grid_vx[self.node_index(0, j)] = 0.0
+            grid_vx[self.node_index(self.nnx-1, j)] = 0.0
 
-        # Foundation: prescribed velocity
-        for mp in self.particles:
-            if mp.material_id == 1:  # Foundation
-                mp.vy = self.foundation_velocity
-                mp.vx = 0  # No lateral movement
+        # Foundation: prescribed velocity (displacement controlled)
+        for idx in self.foundation_indices:
+            mp = self.particles[idx]
+            mp.vy = self.foundation_velocity
+            mp.vx = 0.0  # No lateral movement
 
-        # G2P - Update particles
-        for mp in self.particles:
+        # G2P - Update particles from grid
+        for i, mp in enumerate(self.particles):
             if mp.material_id == 0:  # Soil particles use grid velocity
                 nodes, N, dNdx, dNdy = self.get_shape_functions(mp)
+
+                if len(nodes) == 0:
+                    continue
 
                 vx_new = sum(N[k] * grid_vx[node] for k, node in enumerate(nodes))
                 vy_new = sum(N[k] * grid_vy[node] for k, node in enumerate(nodes))
@@ -532,12 +602,13 @@ class MPM2D_AShaped:
                 mp.vx = vx_new
                 mp.vy = vy_new
 
-                # Update strain
+                # Velocity gradients
                 dvx_dx = sum(grid_vx[node] * dNdx[k] for k, node in enumerate(nodes))
                 dvy_dy = sum(grid_vy[node] * dNdy[k] for k, node in enumerate(nodes))
                 dvx_dy = sum(grid_vx[node] * dNdy[k] for k, node in enumerate(nodes))
                 dvy_dx = sum(grid_vy[node] * dNdx[k] for k, node in enumerate(nodes))
 
+                # Strain increment
                 dexx = dt * dvx_dx
                 deyy = dt * dvy_dy
                 dexy = dt * 0.5 * (dvx_dy + dvy_dx)
@@ -546,13 +617,14 @@ class MPM2D_AShaped:
                 mp.eyy += deyy
                 mp.exy += dexy
 
-                # Update volume
-                J = 1 + dexx + deyy
+                # Update volume (Jacobian)
+                J = 1.0 + dexx + deyy
                 mp.volume *= J
 
-                # Elastic stress increment
-                dsxx = self.K * (dexx + deyy) + 2 * self.G * (dexx - (dexx + deyy)/3)
-                dsyy = self.K * (dexx + deyy) + 2 * self.G * (deyy - (dexx + deyy)/3)
+                # Elastic stress increment (plane strain)
+                dev = dexx + deyy
+                dsxx = self.K * dev + 2 * self.G * (dexx - dev/3)
+                dsyy = self.K * dev + 2 * self.G * (deyy - dev/3)
                 dsxy = 2 * self.G * dexy
 
                 mp.sxx += dsxx
@@ -570,21 +642,76 @@ class MPM2D_AShaped:
         self.step_count += 1
 
     def calculate_reaction_force(self):
-        """Calculate vertical reaction force on foundation"""
-        foundation_particles = [mp for mp in self.particles if mp.material_id == 1]
-        if not foundation_particles:
-            return 0
-        
-        # Calculate reaction through stress integration
-        reaction = 0
-        for mp in self.particles:
-            if mp.material_id == 0:  # Soil particles
-                # Check if soil particle is near foundation
-                foundation_y = np.mean([fp.y for fp in foundation_particles])
-                if abs(mp.y - foundation_y) < 2.0 * self.dy:  # Near foundation
-                    # Contribute to reaction based on stress
-                    reaction += abs(mp.syy) * mp.volume / self.dy
-        
+        """
+        Calculate vertical reaction force on foundation using momentum balance
+
+        CORRECTED IMPLEMENTATION:
+        Uses the grid forces acting on foundation nodes to compute reaction
+        """
+        if not self.foundation_indices:
+            return 0.0
+
+        # Method 1: Sum grid forces at foundation particle locations
+        # This is more accurate as it captures the actual force balance
+
+        reaction = 0.0
+        foundation_nodes = set()
+
+        # Find all nodes that foundation particles contribute to
+        for idx in self.foundation_indices:
+            mp = self.particles[idx]
+            nodes, N, _, _ = self.get_shape_functions(mp)
+            foundation_nodes.update(nodes)
+
+        # Sum vertical forces at these nodes
+        for node in foundation_nodes:
+            if self.grid_mass[node] > 1e-12:
+                # The reaction is the force required to maintain the prescribed velocity
+                reaction += abs(self.grid_force_y[node])
+
+        # Alternative Method 2: Integration of contact stresses
+        # Sum vertical stress at soil particles just below foundation
+        if self.foundation_indices:
+            foundation_y = np.mean([self.particles[idx].y for idx in self.foundation_indices])
+
+            contact_reaction = 0.0
+            for mp in self.particles:
+                if mp.material_id == 0:  # Soil
+                    # Check if particle is just below foundation
+                    if foundation_y - 2*self.dy < mp.y < foundation_y:
+                        # Weight by proximity to foundation
+                        weight = 1.0 - abs(mp.y - foundation_y) / (2*self.dy)
+                        contact_reaction += abs(mp.syy) * mp.volume * weight / self.dy
+
+            # Use average of both methods for robustness
+            reaction = (reaction + contact_reaction) / 2
+
+        return reaction
+
+    def calculate_reaction_force_direct(self):
+        """
+        Alternative: Calculate reaction directly from foundation particle forces
+        This sums the forces needed to maintain the prescribed foundation motion
+        """
+        if not self.foundation_indices:
+            return 0.0
+
+        # Calculate force from momentum change at foundation
+        reaction = 0.0
+
+        for idx in self.foundation_indices:
+            mp = self.particles[idx]
+            nodes, N, dNdx, dNdy = self.get_shape_functions(mp)
+
+            # Force on this particle from stress divergence
+            fx = 0.0
+            fy = 0.0
+            for k, node in enumerate(nodes):
+                if self.grid_mass[node] > 1e-12:
+                    fy += N[k] * self.grid_force_y[node]
+
+            reaction += abs(fy)
+
         return reaction
 
     def run_bearing_capacity_test(self, settlement_rate=0.01,
@@ -592,7 +719,7 @@ class MPM2D_AShaped:
                                   output_interval=0.01,
                                   max_steps=10000):
         """
-        Run bearing capacity test
+        Run bearing capacity test with displacement control
 
         Parameters:
         - settlement_rate: m/s (positive = downward)
@@ -605,8 +732,14 @@ class MPM2D_AShaped:
         print(f"Settlement rate: {settlement_rate} m/s")
         print(f"Target settlement: {target_settlement} m")
 
+        if not self.foundation_indices:
+            print("ERROR: No foundation particles found!")
+            return np.array([]), np.array([]), np.array([])
+
         dt = self.compute_timestep()
         print(f"Timestep: {dt:.6f} s")
+        print(f"Expected simulation time: {target_settlement/settlement_rate:.1f} s")
+        print(f"Expected steps: {int(target_settlement/settlement_rate/dt)}")
 
         self.foundation_velocity = -settlement_rate  # Negative = downward
 
@@ -618,45 +751,38 @@ class MPM2D_AShaped:
         start_time = time.time()
 
         # Initial foundation position
-        foundation_particles = [mp for mp in self.particles if mp.material_id == 1]
-        if foundation_particles:
-            foundation_y0 = np.mean([mp.y for mp in foundation_particles])
-        else:
-            print("ERROR: No foundation particles found!")
-            return np.array([]), np.array([]), np.array([])
+        foundation_y0 = np.mean([self.particles[idx].y for idx in self.foundation_indices])
 
         while self.step_count < max_steps:
             self.mpm_step(dt)
 
             # Calculate current settlement
-            foundation_particles = [mp for mp in self.particles if mp.material_id == 1]
-            if foundation_particles:
-                current_y = np.mean([mp.y for mp in foundation_particles])
-                settlement = foundation_y0 - current_y
-            else:
-                settlement = 0
+            current_y = np.mean([self.particles[idx].y for idx in self.foundation_indices])
+            settlement = foundation_y0 - current_y
 
-            # Calculate reaction force
+            # Calculate and store results at output intervals
             if self.time >= next_output:
                 reaction = self.calculate_reaction_force()
 
                 settlements.append(settlement)
-                loads.append(reaction / 1000)  # kN
+                loads.append(reaction / 1000)  # Convert to kN
                 times.append(self.time)
 
                 next_output += output_interval
 
-                if self.step_count % 100 == 0:
+                if self.step_count % 200 == 0:
+                    elapsed = time.time() - start_time
+                    eta = elapsed / max(settlement, 1e-6) * (target_settlement - settlement)
                     print(f"Step {self.step_count:5d} | t={self.time:.3f}s | "
-                          f"Settlement={settlement:.4f}m | Load={reaction/1000:.0f}kN",
-                          end='\r')
+                          f"Settlement={settlement:.4f}m | Load={reaction/1000:.0f}kN | "
+                          f"ETA: {eta:.0f}s", end='\r')
 
             if settlement >= target_settlement:
-                print(f"\n✓ Target settlement reached")
+                print(f"\nTarget settlement of {target_settlement}m reached")
                 break
 
         elapsed = time.time() - start_time
-        print(f"\n✓ Simulation complete in {elapsed:.1f}s")
+        print(f"\nSimulation complete in {elapsed:.1f}s ({self.step_count} steps)")
 
         return np.array(settlements), np.array(loads), np.array(times)
 
@@ -696,7 +822,7 @@ class MPM2D_AShaped:
 # ============================================================
 
 def main():
-    """Run fixed A-shaped mat foundation simulation"""
+    """Run corrected A-shaped mat foundation simulation"""
 
     print("\nCreating exact A-shaped geometry from Liu et al...")
     geometry = create_exact_ashaped_geometry()
@@ -729,21 +855,27 @@ def main():
     plt.tight_layout()
     plt.savefig('ashaped_geometry_exact.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print("✓ Geometry saved: ashaped_geometry_exact.png")
+    print("Geometry saved: ashaped_geometry_exact.png")
 
-    # Domain setup - wider to accommodate foundation
-    domain_width = 30.0  # Wider domain
-    domain_height = 20.0  # Deep enough
+    # Domain setup - wider to accommodate foundation and avoid boundary effects
+    domain_width = 30.0   # 3x foundation width
+    domain_height = 20.0  # Deep enough for bearing capacity
 
     # Grid - refined for better accuracy
-    nx = 50  # More refined
+    nx = 60   # More refined grid
     ny = 40
 
     # Material properties from Liu et al.
     su = LIU_DATA['soil_strength_su']
-    E = 500 * su
-    nu = 0.495
+    E = 500 * su  # Typical ratio for soft clay
+    nu = 0.495    # Nearly incompressible
     rho = LIU_DATA['soil_density']
+
+    print(f"\nMaterial properties:")
+    print(f"  Undrained shear strength: {su} Pa")
+    print(f"  Young's modulus: {E/1000} kPa")
+    print(f"  Poisson's ratio: {nu}")
+    print(f"  Density: {rho} kg/m^3")
 
     # Initialize solver
     mpm = MPM2D_AShaped(
@@ -755,18 +887,19 @@ def main():
     )
 
     # Add soil - leave space for foundation
+    soil_surface = 15.0
     mpm.add_soil_block(
         x_range=[0, domain_width],
-        y_range=[0, 15.0],  # Up to y=15m
+        y_range=[0, soil_surface],
         ppc=4
     )
 
     # Add A-shaped foundation at the soil surface
     mpm.add_ashaped_foundation(
-        y_position=15.0,  # Place at soil surface
-        thickness=0.5,     # Mat thickness
-        ppc=4,            # Particles per cell
-        foundation_density=7850  # Steel density
+        y_position=soil_surface,
+        thickness=0.5,
+        ppc=4,
+        foundation_density=7850
     )
 
     print(f"\nTotal particles: {len(mpm.particles)}")
@@ -774,75 +907,98 @@ def main():
     found_count = sum(1 for mp in mpm.particles if mp.material_id == 1)
     print(f"  Soil: {soil_count}")
     print(f"  Foundation: {found_count}")
-    
-    if found_count < 50:
-        print(f"\nWARNING: Only {found_count} foundation particles! Check discretization.")
 
-    # Initial state
+    if found_count < 20:
+        print(f"\nERROR: Only {found_count} foundation particles!")
+        print("The foundation discretization has failed. Check parameters.")
+        return None, np.array([]), np.array([])
+
+    # Initial state visualization
     fig, ax = plt.subplots(figsize=(14, 10))
-    mpm.plot_state(ax=ax, show_stress=False, title='Initial Configuration (Fixed)')
+    mpm.plot_state(ax=ax, show_stress=False, title='Initial Configuration (Corrected)')
     ax.set_xlim(0, domain_width)
-    ax.set_ylim(13, 17)  # Zoom in on foundation area
+    ax.set_ylim(soil_surface - 5, soil_surface + 2)
     plt.tight_layout()
-    plt.savefig('mpm_initial_fixed.png', dpi=150, bbox_inches='tight')
+    plt.savefig('mpm_initial_corrected.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print("✓ Initial state saved")
+    print("Initial state saved: mpm_initial_corrected.png")
 
-    # Run test
+    # Run bearing capacity test
     settlements, loads, times = mpm.run_bearing_capacity_test(
         settlement_rate=0.01,
         target_settlement=0.5,
         output_interval=0.02,
-        max_steps=8000
+        max_steps=10000
     )
 
     if len(settlements) == 0:
         print("ERROR: No data collected during simulation!")
         return None, np.array([]), np.array([])
 
-    # Final state
+    # Final state visualization
     fig, ax = plt.subplots(figsize=(14, 10))
     mpm.plot_state(ax=ax, show_stress=True,
-                  title=f'Final State (Settlement = {settlements[-1]:.2f}m)')
+                  title=f'Final State (Settlement = {settlements[-1]:.3f}m)')
     ax.set_xlim(0, domain_width)
-    ax.set_ylim(13, 17)
+    ax.set_ylim(soil_surface - 5, soil_surface + 2)
     plt.tight_layout()
-    plt.savefig('mpm_final_fixed.png', dpi=150, bbox_inches='tight')
+    plt.savefig('mpm_final_corrected.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print("✓ Final state saved")
+    print("Final state saved: mpm_final_corrected.png")
 
-    # Find ultimate capacity
+    # Find ultimate bearing capacity
     if len(loads) > 10:
-        from scipy.signal import savgol_filter
-        loads_smooth = savgol_filter(loads, min(11, len(loads)//2*2+1), 3)
-        dload = np.gradient(loads_smooth)
-        failure_idx = np.where(dload < np.max(dload) * 0.2)[0]
-        V_ult = loads_smooth[failure_idx[0]] if len(failure_idx) > 0 else np.max(loads_smooth)
+        try:
+            from scipy.signal import savgol_filter
+            window = min(11, len(loads)//2*2+1)
+            if window >= 3:
+                loads_smooth = savgol_filter(loads, window, 3)
+            else:
+                loads_smooth = loads
+
+            # Find where load-settlement curve plateaus
+            dload = np.gradient(loads_smooth)
+            dsettlement = np.gradient(settlements)
+
+            # Stiffness (load per settlement)
+            stiffness = np.abs(dload / (dsettlement + 1e-10))
+
+            # Ultimate load is where stiffness drops significantly
+            peak_stiffness = np.max(stiffness[:len(stiffness)//3]) if len(stiffness) > 3 else stiffness[0]
+            failure_idx = np.where(stiffness < peak_stiffness * 0.1)[0]
+
+            if len(failure_idx) > 0:
+                V_ult = loads_smooth[failure_idx[0]]
+            else:
+                V_ult = np.max(loads_smooth)
+        except Exception as e:
+            print(f"Warning: Could not smooth data: {e}")
+            V_ult = np.max(loads)
     else:
         V_ult = np.max(loads) if len(loads) > 0 else 0
 
     # Plot results
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
-    # Load-settlement
+    # Load-settlement curve
     ax1 = axes[0]
-    ax1.plot(settlements, loads, 'b-', linewidth=2, label='2D MPM (Fixed)')
-    ax1.axhline(y=LIU_DATA['ultimate_load_test'], color='r', linestyle='--', 
-               linewidth=2, label=f'Centrifuge ({LIU_DATA["ultimate_load_test"]} kN)')
+    ax1.plot(settlements, loads, 'b-', linewidth=2, label='2D MPM (Corrected)')
+    ax1.axhline(y=LIU_DATA['ultimate_load_test'], color='r', linestyle='--',
+               linewidth=2, label=f"Centrifuge ({LIU_DATA['ultimate_load_test']} kN)")
     ax1.axhline(y=LIU_DATA['ultimate_load_FEM'], color='g', linestyle=':',
-               linewidth=2, label=f'FEM ({LIU_DATA["ultimate_load_FEM"]} kN)')
+               linewidth=2, label=f"FEM ({LIU_DATA['ultimate_load_FEM']} kN)")
     if V_ult > 0:
         ax1.axhline(y=V_ult, color='blue', linestyle='--', linewidth=1.5, alpha=0.7,
                    label=f'MPM Ultimate ({V_ult:.0f} kN)')
     ax1.set_xlabel('Settlement (m)')
     ax1.set_ylabel('Vertical Load (kN)')
-    ax1.set_title('Load-Settlement Curve\nA-Shaped Foundation (Fixed)')
+    ax1.set_title('Load-Settlement Curve\nA-Shaped Foundation (Corrected)')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # Comparison
+    # Comparison bar chart
     ax2 = axes[1]
-    methods = ['Centrifuge\nTest', 'FEM\n(Liu)', '2D MPM\n(Fixed)']
+    methods = ['Centrifuge\nTest', 'FEM\n(Liu)', '2D MPM\n(Corrected)']
     capacities = [LIU_DATA['ultimate_load_test'],
                  LIU_DATA['ultimate_load_FEM'], V_ult]
     colors = ['red', 'green', 'blue']
@@ -860,12 +1016,12 @@ def main():
                 ha='center', va='bottom', fontsize=12, fontweight='bold')
 
     plt.tight_layout()
-    plt.savefig('mpm_results_fixed.png', dpi=150, bbox_inches='tight')
+    plt.savefig('mpm_results_corrected.png', dpi=150, bbox_inches='tight')
     plt.show()
 
     # Summary
     print("\n" + "="*70)
-    print("FINAL RESULTS - A-SHAPED MAT FOUNDATION (FIXED)")
+    print("FINAL RESULTS - A-SHAPED MAT FOUNDATION (CORRECTED)")
     print("="*70)
     if V_ult > 0:
         error = abs(V_ult - LIU_DATA['ultimate_load_test']) / LIU_DATA['ultimate_load_test'] * 100
@@ -873,15 +1029,17 @@ def main():
         print("-"*70)
         print(f"{'Centrifuge Test':<25} {LIU_DATA['ultimate_load_test']:>10}       {'--':>10}")
         print(f"{'FEM (Liu et al.)':<25} {LIU_DATA['ultimate_load_FEM']:>10}       {0.1:>9.1f}%")
-        print(f"{'2D MPM (Fixed)':<25} {V_ult:>10.0f}       {error:>9.1f}%")
+        print(f"{'2D MPM (Corrected)':<25} {V_ult:>10.0f}       {error:>9.1f}%")
         print("="*70)
 
-        if error < 20:
-            print("\n✓✓✓ VALIDATION IMPROVED - ACCEPTABLE ACCURACY ✓✓✓")
-        elif error < 30:
-            print(f"\n⚠ MPM differs by {error:.1f}% - moderate accuracy")
+        if error < 15:
+            print("\nEXCELLENT: Error < 15% - Very good agreement!")
+        elif error < 25:
+            print(f"\nGOOD: Error = {error:.1f}% - Acceptable accuracy")
+        elif error < 40:
+            print(f"\nFAIR: Error = {error:.1f}% - Consider refining grid or parameters")
         else:
-            print(f"\n⚠ MPM differs by {error:.1f}% - needs further refinement")
+            print(f"\nPOOR: Error = {error:.1f}% - Check model setup")
     else:
         print("ERROR: Unable to calculate bearing capacity")
 
@@ -890,5 +1048,5 @@ def main():
 if __name__ == "__main__":
     mpm, settlements, loads = main()
     print("\n" + "="*70)
-    print("A-SHAPED MAT FOUNDATION MPM COMPLETE (FIXED)")
+    print("A-SHAPED MAT FOUNDATION MPM ANALYSIS COMPLETE")
     print("="*70)
