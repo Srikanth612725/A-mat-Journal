@@ -1045,8 +1045,18 @@ def main():
 
     return mpm, settlements, loads
 
-if __name__ == "__main__":
-    mpm, settlements, loads = main()
-    print("\n" + "="*70)
-    print("A-SHAPED MAT FOUNDATION MPM ANALYSIS COMPLETE")
-    print("="*70)
+# ============================================================
+# RUN SIMULATION
+# ============================================================
+# For Google Colab: Run this cell to define all functions,
+# then call main() from another cell, or uncomment below:
+
+# Uncomment the following lines to run directly:
+# mpm, settlements, loads = main()
+# print("\n" + "="*70)
+# print("A-SHAPED MAT FOUNDATION MPM ANALYSIS COMPLETE")
+# print("="*70)
+
+# For standalone Python script, use:
+# if __name__ == "__main__":
+#     mpm, settlements, loads = main()
