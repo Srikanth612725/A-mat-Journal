@@ -1,89 +1,38 @@
-# FULLY DEBUGGED 2D MPM WITH A-SHAPED MAT FOUNDATION
-# All bugs fixed - should match Liu et al. (2022) results
+# CORRECTED 2D MPM - A-SHAPED MAT FOUNDATION
+# Proper 2D plane strain approach
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, Rectangle
 from matplotlib.path import Path
 import time
 from dataclasses import dataclass
 from typing import List
 
 print("="*70)
-print("FULLY DEBUGGED 2D MPM - A-SHAPED MAT FOUNDATION")
-print("All Critical Bugs Fixed")
+print("CORRECTED 2D MPM - A-SHAPED MAT FOUNDATION")
+print("Proper 2D Plane Strain Approach")
 print("="*70)
 
 # ============================================================
-# EXACT GEOMETRY FROM LIU ET AL. (2022)
-# ============================================================
-
-def create_exact_ashaped_geometry():
-    """
-    Create EXACT A-shaped mat geometry from Liu et al. (2022)
-    Area: 68.4 m^2
-    """
-    vertices = np.array([
-        [5.0, 0.0],    # Bow tip
-        [6.5, 2.0],    # Bow right
-        [7.5, 5.0],    # Right forward
-        [7.5, 9.0],    # Right back
-        [6.25, 10.0],  # Stern right
-        [5.0, 10.0],   # Stern center
-        [3.75, 10.0],  # Stern left
-        [2.5, 9.0],    # Left back
-        [2.5, 5.0],    # Left forward
-        [3.5, 2.0],    # Bow left
-        [5.0, 0.0],    # Close
-    ])
-
-    perforation = np.array([
-        [3.75, 1.5], [6.25, 1.5], [6.25, 4.0], [3.75, 4.0],
-    ])
-
-    wellhead_groove = np.array([
-        [4.0, 8.0], [6.0, 8.0], [6.0, 10.0], [4.0, 10.0],
-    ])
-
-    return {
-        'main_boundary': vertices,
-        'perforation': perforation,
-        'wellhead_groove': wellhead_groove,
-        'area': 68.4,
-        'length': 10.0,
-        'width': 10.0,
-    }
-
-def point_in_polygon(x, y, polygon):
-    """Check if point is inside polygon"""
-    path = Path(polygon)
-    return path.contains_point((x, y))
-
-def is_inside_ashaped(x_local, y_local, geometry):
-    """
-    Check if LOCAL coordinates are inside A-shape
-    x_local, y_local should be in [0, 10] range
-    """
-    if not point_in_polygon(x_local, y_local, geometry['main_boundary']):
-        return False
-    if point_in_polygon(x_local, y_local, geometry['perforation']):
-        return False
-    if point_in_polygon(x_local, y_local, geometry['wellhead_groove']):
-        return False
-    return True
-
-# ============================================================
-# REFERENCE DATA
+# REFERENCE DATA FROM LIU ET AL. (2022)
 # ============================================================
 
 LIU_DATA = {
-    'foundation_area': 68.4,
-    'soil_strength_su': 6000,   # Pa
-    'soil_density': 1600,       # kg/m^3
-    'ultimate_load_test': 2522, # kN
-    'ultimate_load_FEM': 2524,  # kN
+    'foundation_area': 68.4,      # m^2
+    'foundation_length': 10.0,    # m (bow to stern)
+    'foundation_width': 10.0,     # m (max beam)
+    'soil_strength_su': 6000,     # Pa
+    'soil_density': 1600,         # kg/m^3
+    'ultimate_load_test': 2522,   # kN
+    'ultimate_load_FEM': 2524,    # kN
     'Nc_theoretical': 5.14,
 }
+
+# For 2D plane strain, we need EQUIVALENT WIDTH
+# Equivalent width = Area / Length = 68.4 / 10 = 6.84 m
+EQUIVALENT_WIDTH = LIU_DATA['foundation_area'] / LIU_DATA['foundation_length']
+print(f"Equivalent foundation width for 2D: {EQUIVALENT_WIDTH:.2f} m")
 
 # ============================================================
 # MATERIAL POINT
@@ -111,16 +60,12 @@ class MaterialPoint:
         radius = np.sqrt(((self.sxx - self.syy) / 2)**2 + self.sxy**2)
         return s_mean + radius, s_mean - radius
 
-    def von_mises_stress(self):
-        return np.sqrt(0.5 * ((self.sxx - self.syy)**2 +
-                             self.sxx**2 + self.syy**2 + 6*self.sxy**2))
-
 # ============================================================
-# MPM SOLVER - FULLY DEBUGGED
+# MPM SOLVER
 # ============================================================
 
-class MPM2D_AShaped:
-    def __init__(self, domain_x, domain_y, nx, ny, su, E, nu, rho, geometry):
+class MPM2D:
+    def __init__(self, domain_x, domain_y, nx, ny, su, E, nu, rho):
         # Domain
         self.x_min, self.x_max = domain_x
         self.y_min, self.y_max = domain_y
@@ -143,9 +88,6 @@ class MPM2D_AShaped:
         self.G = E / (2 * (1 + nu))
         self.K = E / (3 * (1 - 2*nu))
 
-        # Geometry
-        self.geometry = geometry
-
         # Particles
         self.particles: List[MaterialPoint] = []
         self.foundation_indices = []
@@ -161,7 +103,7 @@ class MPM2D_AShaped:
 
         print(f"MPM Solver initialized")
         print(f"  Domain: {self.Lx}m x {self.Ly}m")
-        print(f"  Grid: {nx}x{ny} cells, {self.dx:.3f}m x {self.dy:.3f}m")
+        print(f"  Grid: {nx}x{ny} cells ({self.dx:.3f}m x {self.dy:.3f}m)")
 
     def reset_grid(self):
         n = self.nnx * self.nny
@@ -200,52 +142,44 @@ class MPM2D_AShaped:
                 ))
                 count += 1
 
-        print(f"Added {count} soil particles (V={V_p:.6f} m^2, m={m_p:.4f} kg)")
+        print(f"Added {count} soil particles")
 
-    def add_ashaped_foundation(self, y_base, foundation_density=2500):
+    def add_strip_foundation(self, center_x, y_base, width, thickness=0.5,
+                             density=2500):
         """
-        Add A-shaped foundation particles
+        Add strip foundation for 2D plane strain analysis
 
-        CRITICAL FIX: Properly center foundation in domain
+        CORRECT APPROACH:
+        - Foundation is a STRIP at soil surface
+        - Width = equivalent width of A-shaped foundation
+        - Thickness = mat thickness (~0.5m)
         """
-        geom = self.geometry
-
-        # Particle spacing
         ppc = 4
         ppc_1d = int(np.sqrt(ppc))
         dx_p = self.dx / ppc_1d
         dy_p = self.dy / ppc_1d
 
-        # Volume and mass per particle
-        V_p = dx_p * dy_p
-        mat_thickness = 0.5  # Out-of-plane thickness
-        m_p = foundation_density * V_p * mat_thickness
+        # Foundation bounds
+        x_left = center_x - width / 2
+        x_right = center_x + width / 2
 
-        # CRITICAL: Center foundation in domain
-        # Foundation local coords: x in [2.5, 7.5], y in [0, 10]
-        # Domain center: x = (x_min + x_max) / 2
-        domain_center_x = (self.x_min + self.x_max) / 2
-        foundation_center_x = 5.0  # Center of A-shape in local coords
-        x_offset = domain_center_x - foundation_center_x  # Shift to center
+        # Volume and mass (per unit out-of-plane depth)
+        V_p = dx_p * dy_p
+        m_p = density * V_p
 
         count = 0
         start_idx = len(self.particles)
 
-        # Sample across local foundation coordinates
-        for x_local in np.arange(dx_p/2, 10.0, dx_p):
-            for y_local in np.arange(dy_p/2, 10.0, dy_p):
-                if is_inside_ashaped(x_local, y_local, geom):
-                    # Transform to global coordinates
-                    x_global = x_local + x_offset
-                    y_global = y_local + y_base
-
-                    self.particles.append(MaterialPoint(
-                        x=x_global, y=y_global, vx=0, vy=0,
-                        mass=m_p, volume=V_p, volume0=V_p,
-                        sxx=0, syy=0, sxy=0,
-                        exx=0, eyy=0, exy=0, material_id=1
-                    ))
-                    count += 1
+        # Create particles in the strip
+        for x in np.arange(x_left + dx_p/2, x_right, dx_p):
+            for y in np.arange(y_base + dy_p/2, y_base + thickness, dy_p):
+                self.particles.append(MaterialPoint(
+                    x=x, y=y, vx=0, vy=0,
+                    mass=m_p, volume=V_p, volume0=V_p,
+                    sxx=0, syy=0, sxy=0,
+                    exx=0, eyy=0, exy=0, material_id=1
+                ))
+                count += 1
 
         self.foundation_indices = list(range(start_idx, len(self.particles)))
 
@@ -255,22 +189,22 @@ class MPM2D_AShaped:
             self.foundation_y0 = np.mean(fy)
 
             print(f"Added {count} foundation particles")
-            print(f"  X range: [{min(fx):.1f}, {max(fx):.1f}] m")
-            print(f"  Y range: [{min(fy):.1f}, {max(fy):.1f}] m")
-            print(f"  Centroid: ({np.mean(fx):.1f}, {self.foundation_y0:.1f}) m")
-            print(f"  Total mass: {sum(self.particles[i].mass for i in self.foundation_indices):.0f} kg")
+            print(f"  Width: {width:.2f} m, Thickness: {thickness:.2f} m")
+            print(f"  X range: [{min(fx):.2f}, {max(fx):.2f}] m")
+            print(f"  Y range: [{min(fy):.2f}, {max(fy):.2f}] m")
+            print(f"  Centroid: ({np.mean(fx):.2f}, {self.foundation_y0:.2f}) m")
         else:
-            print("ERROR: No foundation particles created!")
-            self.foundation_y0 = y_base + 5
+            print("ERROR: No foundation particles!")
+            self.foundation_y0 = y_base + thickness/2
 
         self._visualize()
 
     def _visualize(self):
-        """Visualize particle distribution"""
+        """Visualize particles"""
         soil = [(p.x, p.y) for p in self.particles if p.material_id == 0]
         found = [(p.x, p.y) for p in self.particles if p.material_id == 1]
 
-        fig, ax = plt.subplots(figsize=(12, 10))
+        fig, ax = plt.subplots(figsize=(14, 8))
 
         if soil:
             sx, sy = zip(*soil)
@@ -278,18 +212,18 @@ class MPM2D_AShaped:
 
         if found:
             fx, fy = zip(*found)
-            ax.scatter(fx, fy, s=3, c='red', marker='s', label=f'Foundation ({len(found)})')
+            ax.scatter(fx, fy, s=5, c='red', marker='s', label=f'Foundation ({len(found)})')
 
         ax.set_xlabel('X (m)')
         ax.set_ylabel('Y (m)')
-        ax.set_title('Particle Distribution')
+        ax.set_title('2D MPM Particle Distribution')
         ax.legend()
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig('particle_distribution.png', dpi=150)
+        plt.savefig('particles.png', dpi=150)
         plt.close()
-        print("Saved: particle_distribution.png")
+        print("Saved: particles.png")
 
     def shape_function(self, x, x_node, h):
         """Linear shape function"""
@@ -332,7 +266,7 @@ class MPM2D_AShaped:
         return 0.3 * min(self.dx, self.dy) / c
 
     def tresca_return(self, mp):
-        """Tresca plasticity for soil"""
+        """Tresca plasticity"""
         if mp.material_id != 0:
             return
 
@@ -360,7 +294,7 @@ class MPM2D_AShaped:
         """Single MPM timestep"""
         self.reset_grid()
 
-        # P2G: Mass and momentum
+        # P2G
         for mp in self.particles:
             nodes, N, dNdx, dNdy = self.get_shape_functions(mp)
             for k, n in enumerate(nodes):
@@ -391,12 +325,13 @@ class MPM2D_AShaped:
         self.grid_vx[active] += dt * self.grid_fx[active] / self.grid_mass[active]
         self.grid_vy[active] += dt * self.grid_fy[active] / self.grid_mass[active]
 
-        # Boundary conditions
+        # Boundary conditions - Bottom fixed
         for i in range(self.nnx):
             n = self.node_index(i, 0)
             self.grid_vx[n] = 0
             self.grid_vy[n] = 0
 
+        # Sides - roller
         for j in range(self.nny):
             self.grid_vx[self.node_index(0, j)] = 0
             self.grid_vx[self.node_index(self.nnx-1, j)] = 0
@@ -406,9 +341,9 @@ class MPM2D_AShaped:
             self.particles[idx].vx = 0
             self.particles[idx].vy = self.foundation_velocity
 
-        # G2P: Update particles
+        # G2P
         for mp in self.particles:
-            if mp.material_id == 0:  # Soil
+            if mp.material_id == 0:
                 nodes, N, dNdx, dNdy = self.get_shape_functions(mp)
                 if not nodes:
                     continue
@@ -416,7 +351,7 @@ class MPM2D_AShaped:
                 mp.vx = sum(N[k] * self.grid_vx[n] for k, n in enumerate(nodes))
                 mp.vy = sum(N[k] * self.grid_vy[n] for k, n in enumerate(nodes))
 
-                # Strain rate
+                # Strain
                 dvx_dx = sum(self.grid_vx[n] * dNdx[k] for k, n in enumerate(nodes))
                 dvy_dy = sum(self.grid_vy[n] * dNdy[k] for k, n in enumerate(nodes))
                 dvx_dy = sum(self.grid_vx[n] * dNdy[k] for k, n in enumerate(nodes))
@@ -430,71 +365,72 @@ class MPM2D_AShaped:
                 mp.eyy += deyy
                 mp.exy += dexy
 
-                # Volume update
                 mp.volume *= (1 + dexx + deyy)
 
-                # Stress update (plane strain)
+                # Stress
                 dv = dexx + deyy
                 mp.sxx += self.K * dv + 2 * self.G * (dexx - dv/3)
                 mp.syy += self.K * dv + 2 * self.G * (deyy - dv/3)
                 mp.sxy += 2 * self.G * dexy
 
-                # Plasticity
                 self.tresca_return(mp)
 
-            # Position update
             mp.x += dt * mp.vx
             mp.y += dt * mp.vy
 
         self.time += dt
         self.step_count += 1
 
-    def calculate_reaction(self):
+    def calculate_bearing_capacity(self):
         """
-        Calculate bearing capacity reaction force
+        Calculate bearing capacity using contact force integration
 
-        CORRECTED METHOD:
-        Integrate contact pressure at foundation base
+        For 2D plane strain: Q = integral of contact pressure over width
+        Result is force per unit length (kN/m)
+
+        To get total 3D capacity: Q_total = Q_2D * foundation_length
         """
         if not self.foundation_indices:
             return 0
 
-        # Find foundation base (lowest y of foundation particles)
+        # Find foundation base
         found_y = [self.particles[i].y for i in self.foundation_indices]
         found_x = [self.particles[i].x for i in self.foundation_indices]
         foundation_base = min(found_y)
-        foundation_x_min = min(found_x)
-        foundation_x_max = max(found_x)
+        x_min_found = min(found_x)
+        x_max_found = max(found_x)
 
-        # Find soil particles just below foundation
-        contact_depth = 2 * self.dy
+        # Contact zone
+        contact_depth = 1.5 * self.dy
 
-        reaction = 0
-        contact_particles = 0
+        # Integrate contact pressure
+        total_pressure = 0
+        particle_count = 0
 
         for mp in self.particles:
             if mp.material_id == 0:  # Soil
-                # Check if particle is below foundation and within its x-extent
-                if (foundation_base - contact_depth < mp.y < foundation_base and
-                    foundation_x_min - self.dx < mp.x < foundation_x_max + self.dx):
+                # Check if below foundation
+                if (foundation_base - contact_depth < mp.y < foundation_base + 0.1 * self.dy):
+                    # Check if within foundation x-extent
+                    if x_min_found - 0.5*self.dx < mp.x < x_max_found + 0.5*self.dx:
+                        # Contact pressure (compressive syy is negative)
+                        pressure = -mp.syy
+                        if pressure > 0:
+                            total_pressure += pressure
+                            particle_count += 1
 
-                    # Contact pressure contribution
-                    # In 2D plane strain: force = stress × width
-                    # Each particle represents a width of dx_p
-                    ppc_1d = 2  # sqrt(4)
-                    dx_p = self.dx / ppc_1d
+        # Average pressure * foundation width = force per unit length
+        if particle_count > 0:
+            # Each soil particle represents a tributary width
+            ppc_1d = 2
+            dx_p = self.dx / ppc_1d
 
-                    # Vertical stress (compressive is negative, so use -syy)
-                    contact_pressure = -mp.syy  # Make positive for compression
+            # Sum of pressures * particle width
+            force_per_length = total_pressure * dx_p
 
-                    # Weight by proximity to foundation base
-                    dist = foundation_base - mp.y
-                    weight = max(0, 1 - dist / contact_depth)
+            return force_per_length
 
-                    reaction += contact_pressure * dx_p * weight
-                    contact_particles += 1
-
-        return reaction
+        return 0
 
     def run_test(self, rate=0.01, target=0.5, interval=0.02, max_steps=10000):
         """Run bearing capacity test"""
@@ -507,41 +443,45 @@ class MPM2D_AShaped:
             return [], [], []
 
         dt = self.timestep()
-        print(f"Rate: {rate} m/s, Target: {target} m")
+        print(f"Settlement rate: {rate} m/s")
+        print(f"Target settlement: {target} m")
         print(f"Timestep: {dt:.6f} s")
-        print(f"Expected steps: {int(target/rate/dt)}")
 
         self.foundation_velocity = -rate
 
-        settlements, loads, times = [], [], []
+        settlements, loads_2d, times = [], [], []
         next_out = 0
         t0 = time.time()
 
         while self.step_count < max_steps:
             self.mpm_step(dt)
 
-            # Settlement
             current_y = np.mean([self.particles[i].y for i in self.foundation_indices])
             settlement = self.foundation_y0 - current_y
 
             if self.time >= next_out:
-                load = self.calculate_reaction() / 1000  # kN
+                q_2d = self.calculate_bearing_capacity() / 1000  # kN/m
                 settlements.append(settlement)
-                loads.append(load)
+                loads_2d.append(q_2d)
                 times.append(self.time)
                 next_out += interval
 
                 if self.step_count % 200 == 0:
-                    elapsed = time.time() - t0
+                    # Convert to 3D: multiply by foundation length
+                    q_3d = q_2d * LIU_DATA['foundation_length']
                     print(f"Step {self.step_count:5d} | s={settlement:.4f}m | "
-                          f"Q={load:.0f}kN | t={elapsed:.0f}s", end='\r')
+                          f"Q_2D={q_2d:.0f}kN/m | Q_3D={q_3d:.0f}kN", end='\r')
 
             if settlement >= target:
-                print(f"\nTarget reached at step {self.step_count}")
+                print(f"\nTarget reached")
                 break
 
         print(f"\nDone in {time.time()-t0:.0f}s")
-        return np.array(settlements), np.array(loads), np.array(times)
+
+        # Convert to 3D loads
+        loads_3d = np.array(loads_2d) * LIU_DATA['foundation_length']
+
+        return np.array(settlements), loads_3d, np.array(times)
 
 # ============================================================
 # MAIN
@@ -549,95 +489,82 @@ class MPM2D_AShaped:
 
 def main():
     print("\n" + "="*70)
-    print("STARTING SIMULATION")
+    print("SIMULATION SETUP")
     print("="*70)
 
-    geometry = create_exact_ashaped_geometry()
-
-    # Visualize geometry
-    fig, ax = plt.subplots(figsize=(8, 8))
-    poly = Polygon(geometry['main_boundary'], fill=False, edgecolor='blue', linewidth=2)
-    ax.add_patch(poly)
-    perf = Polygon(geometry['perforation'], fill=True, facecolor='gray', alpha=0.5)
-    ax.add_patch(perf)
-    groove = Polygon(geometry['wellhead_groove'], fill=True, facecolor='gray', alpha=0.5)
-    ax.add_patch(groove)
-    ax.set_xlim(-1, 11)
-    ax.set_ylim(-1, 11)
-    ax.set_aspect('equal')
-    ax.set_title('A-Shaped Foundation Geometry')
-    ax.grid(True, alpha=0.3)
-    plt.savefig('geometry.png', dpi=150)
-    plt.close()
-    print("Saved: geometry.png")
-
-    # Setup
+    # Material properties
     su = LIU_DATA['soil_strength_su']
     E = 500 * su
     nu = 0.495
     rho = LIU_DATA['soil_density']
 
-    # Domain - 3x foundation width to avoid boundary effects
-    domain_width = 30.0
-    domain_height = 25.0
-    soil_surface = 12.0
+    print(f"Material: su={su}Pa, E={E/1000}kPa, nu={nu}, rho={rho}kg/m3")
+
+    # Domain
+    # Width should be > 5 * foundation width to avoid boundary effects
+    foundation_width = EQUIVALENT_WIDTH  # 6.84 m
+    domain_width = 40.0  # ~6x foundation width
+    domain_height = 20.0
+    soil_surface = 15.0
 
     # Grid
-    nx, ny = 60, 50
+    nx, ny = 80, 40  # Refined grid
 
-    print(f"\nMaterial: su={su}Pa, E={E/1000}kPa, rho={rho}kg/m3")
-    print(f"Domain: {domain_width}x{domain_height}m, Grid: {nx}x{ny}")
+    print(f"Foundation width: {foundation_width:.2f} m")
+    print(f"Domain: {domain_width}x{domain_height}m")
+    print(f"Grid: {nx}x{ny}")
 
     # Create solver
-    mpm = MPM2D_AShaped(
+    mpm = MPM2D(
         domain_x=[0, domain_width],
         domain_y=[0, domain_height],
         nx=nx, ny=ny,
-        su=su, E=E, nu=nu, rho=rho,
-        geometry=geometry
+        su=su, E=E, nu=nu, rho=rho
     )
 
-    # Add materials
+    # Add soil
     mpm.add_soil_block([0, domain_width], [0, soil_surface], ppc=4)
-    mpm.add_ashaped_foundation(soil_surface, foundation_density=2500)
+
+    # Add strip foundation (centered)
+    center_x = domain_width / 2
+    mpm.add_strip_foundation(
+        center_x=center_x,
+        y_base=soil_surface,
+        width=foundation_width,
+        thickness=0.5,
+        density=2500
+    )
 
     total = len(mpm.particles)
     soil = sum(1 for p in mpm.particles if p.material_id == 0)
     found = len(mpm.foundation_indices)
-    print(f"\nParticles: {total} total ({soil} soil, {found} foundation)")
+    print(f"\nTotal particles: {total} ({soil} soil, {found} foundation)")
 
-    if found < 100:
-        print(f"WARNING: Only {found} foundation particles - may be inaccurate")
+    # Theoretical capacity check
+    # Q_ult = su * Nc * Area = 6000 * 5.14 * 68.4 = 2109 kN
+    q_theory = su * LIU_DATA['Nc_theoretical'] * LIU_DATA['foundation_area'] / 1000
+    print(f"Theoretical capacity (Nc=5.14): {q_theory:.0f} kN")
 
     # Run test
     settlements, loads, times = mpm.run_test(
         rate=0.01,
         target=0.5,
         interval=0.02,
-        max_steps=10000
+        max_steps=12000
     )
 
     if len(loads) == 0:
         print("ERROR: No results!")
         return None, [], []
 
-    # Find ultimate load
-    if len(loads) > 5:
-        try:
-            from scipy.signal import savgol_filter
-            w = min(11, len(loads)//2*2+1)
-            smooth = savgol_filter(loads, w, 3) if w >= 3 else loads
-            V_ult = np.max(smooth)
-        except:
-            V_ult = np.max(loads)
-    else:
-        V_ult = np.max(loads) if loads else 0
+    # Ultimate load
+    V_ult = np.max(loads)
 
-    # Plot results
+    # Plot
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax1 = axes[0]
-    ax1.plot(settlements, loads, 'b-', lw=2, label='MPM')
+    ax1.plot(settlements, loads, 'b-', lw=2, label='2D MPM')
     ax1.axhline(LIU_DATA['ultimate_load_test'], color='r', ls='--', lw=2,
                 label=f"Test ({LIU_DATA['ultimate_load_test']} kN)")
     ax1.axhline(LIU_DATA['ultimate_load_FEM'], color='g', ls=':', lw=2,
@@ -669,17 +596,18 @@ def main():
     print("RESULTS")
     print("="*70)
     error = abs(V_ult - LIU_DATA['ultimate_load_test']) / LIU_DATA['ultimate_load_test'] * 100
-    print(f"Test:  {LIU_DATA['ultimate_load_test']} kN")
-    print(f"FEM:   {LIU_DATA['ultimate_load_FEM']} kN")
-    print(f"MPM:   {V_ult:.0f} kN (error: {error:.1f}%)")
+    print(f"Test:     {LIU_DATA['ultimate_load_test']} kN")
+    print(f"FEM:      {LIU_DATA['ultimate_load_FEM']} kN")
+    print(f"MPM:      {V_ult:.0f} kN")
+    print(f"Error:    {error:.1f}%")
     print("="*70)
 
     if error < 20:
         print("GOOD MATCH!")
-    elif error < 40:
-        print("Moderate match - consider refining")
+    elif error < 30:
+        print("Acceptable - consider refinement")
     else:
-        print("Poor match - check model")
+        print("Check model parameters")
 
     return mpm, settlements, loads
 
