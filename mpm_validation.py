@@ -514,13 +514,27 @@ class MPM2D:
 # MAIN
 # ============================================================
 
-def main():
+def run_validation_simulation(
+    su=LIU_DATA['soil_strength_su'],
+    width=EQUIVALENT_WIDTH,
+    thickness=0.5,
+    rate=0.01,
+    target=0.5,
+    interval=0.02,
+    max_steps=12000,
+    domain_width=None,
+    domain_height=20.0,
+    soil_surface=15.0,
+    nx=80,
+    ny=40,
+    density_foundation=2500,
+    plot_results=False,
+):
     print("\n" + "="*70)
     print("SIMULATION SETUP")
     print("="*70)
 
     # Material properties
-    su = LIU_DATA['soil_strength_su']
     E = 500 * su
     nu = 0.495
     rho = LIU_DATA['soil_density']
@@ -528,14 +542,10 @@ def main():
     print(f"Material: su={su}Pa, E={E/1000}kPa, nu={nu}, rho={rho}kg/m3")
 
     # Domain
-    # Width should be > 5 * foundation width to avoid boundary effects
-    foundation_width = EQUIVALENT_WIDTH  # 6.84 m
-    domain_width = 40.0  # ~6x foundation width
-    domain_height = 20.0
-    soil_surface = 15.0
-
-    # Grid
-    nx, ny = 80, 40  # Refined grid
+    foundation_width = width
+    width_based_domain = foundation_width * 6
+    chosen_domain_width = domain_width if domain_width is not None else width_based_domain
+    domain_width = max(chosen_domain_width, width_based_domain)
 
     print(f"Foundation width: {foundation_width:.2f} m")
     print(f"Domain: {domain_width}x{domain_height}m")
@@ -558,8 +568,8 @@ def main():
         center_x=center_x,
         y_base=soil_surface,
         width=foundation_width,
-        thickness=0.5,
-        density=2500
+        thickness=thickness,
+        density=density_foundation
     )
 
     total = len(mpm.particles)
@@ -572,9 +582,11 @@ def main():
     print("ANALYTICAL VALIDATION")
     print("="*70)
 
+    foundation_area = foundation_width * LIU_DATA['foundation_length']
+
     # Prandtl bearing capacity theory for strip foundation on undrained clay
     # Q_ult = su * Nc * Area, where Nc = (2 + π) = 5.14 for undrained conditions
-    q_prandtl = su * LIU_DATA['Nc_theoretical'] * LIU_DATA['foundation_area'] / 1000
+    q_prandtl = su * LIU_DATA['Nc_theoretical'] * foundation_area / 1000
     print(f"Prandtl theory (Nc=5.14): {q_prandtl:.0f} kN")
     print(f"Liu et al. FEM result:    {LIU_DATA['ultimate_load_test']:.0f} kN")
     print(f"Ratio (FEM/Theory):       {LIU_DATA['ultimate_load_test']/q_prandtl:.2f}")
@@ -585,49 +597,59 @@ def main():
 
     # Run test
     settlements, loads, times = mpm.run_test(
-        rate=0.01,
-        target=0.5,
-        interval=0.02,
-        max_steps=12000
+        rate=rate,
+        target=target,
+        interval=interval,
+        max_steps=max_steps
     )
 
     if len(loads) == 0:
         print("ERROR: No results!")
-        return None, [], []
+        return {
+            'mpm': mpm,
+            'settlements': settlements,
+            'loads': loads,
+            'times': times,
+            'ultimate_load': 0,
+            'foundation_width': foundation_width,
+            'foundation_length': LIU_DATA['foundation_length'],
+            'foundation_area': foundation_area,
+            'soil_surface': soil_surface,
+        }
 
     # Ultimate load
     V_ult = np.max(loads)
 
-    # Plot
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    if plot_results:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    ax1 = axes[0]
-    ax1.plot(settlements, loads, 'b-', lw=2, label='2D MPM')
-    ax1.axhline(LIU_DATA['ultimate_load_test'], color='r', ls='--', lw=2,
-                label=f"Test ({LIU_DATA['ultimate_load_test']} kN)")
-    ax1.axhline(LIU_DATA['ultimate_load_FEM'], color='g', ls=':', lw=2,
-                label=f"FEM ({LIU_DATA['ultimate_load_FEM']} kN)")
-    ax1.set_xlabel('Settlement (m)')
-    ax1.set_ylabel('Load (kN)')
-    ax1.set_title('Load-Settlement Curve')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+        ax1 = axes[0]
+        ax1.plot(settlements, loads, 'b-', lw=2, label='2D MPM')
+        ax1.axhline(LIU_DATA['ultimate_load_test'], color='r', ls='--', lw=2,
+                    label=f"Test ({LIU_DATA['ultimate_load_test']} kN)")
+        ax1.axhline(LIU_DATA['ultimate_load_FEM'], color='g', ls=':', lw=2,
+                    label=f"FEM ({LIU_DATA['ultimate_load_FEM']} kN)")
+        ax1.set_xlabel('Settlement (m)')
+        ax1.set_ylabel('Load (kN)')
+        ax1.set_title('Load-Settlement Curve')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
 
-    ax2 = axes[1]
-    methods = ['Test', 'FEM', 'MPM']
-    values = [LIU_DATA['ultimate_load_test'], LIU_DATA['ultimate_load_FEM'], V_ult]
-    colors = ['red', 'green', 'blue']
-    bars = ax2.bar(methods, values, color=colors, alpha=0.7)
-    for bar, v in zip(bars, values):
-        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                f'{v:.0f}', ha='center', va='bottom', fontweight='bold')
-    ax2.set_ylabel('Ultimate Load (kN)')
-    ax2.set_title('Comparison')
-    ax2.grid(True, alpha=0.3, axis='y')
+        ax2 = axes[1]
+        methods = ['Test', 'FEM', 'MPM']
+        values = [LIU_DATA['ultimate_load_test'], LIU_DATA['ultimate_load_FEM'], V_ult]
+        colors = ['red', 'green', 'blue']
+        bars = ax2.bar(methods, values, color=colors, alpha=0.7)
+        for bar, v in zip(bars, values):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
+                     f'{v:.0f}', ha='center', va='bottom', fontweight='bold')
+        ax2.set_ylabel('Ultimate Load (kN)')
+        ax2.set_title('Comparison')
+        ax2.grid(True, alpha=0.3, axis='y')
 
-    plt.tight_layout()
-    plt.savefig('results.png', dpi=150)
-    plt.show()
+        plt.tight_layout()
+        plt.savefig('results.png', dpi=150)
+        plt.show()
 
     # Summary
     print("\n" + "="*70)
@@ -647,8 +669,23 @@ def main():
     else:
         print("Check model parameters")
 
-    return mpm, settlements, loads
+    return {
+        'mpm': mpm,
+        'settlements': settlements,
+        'loads': loads,
+        'times': times,
+        'ultimate_load': V_ult,
+        'foundation_width': foundation_width,
+        'foundation_length': LIU_DATA['foundation_length'],
+        'foundation_area': foundation_area,
+        'soil_surface': soil_surface,
+    }
 
-# Run
-mpm, settlements, loads = main()
-print("\nCOMPLETE")
+
+def main():
+    return run_validation_simulation(plot_results=True)
+
+
+if __name__ == "__main__":
+    run_validation_simulation(plot_results=True)
+    print("\nCOMPLETE")
