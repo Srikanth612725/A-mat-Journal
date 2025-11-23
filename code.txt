@@ -7,13 +7,20 @@
 # is represented by an equivalent rectangular strip for 2D analysis.
 # Full 3D A-shaped geometry would require 3D MPM simulation.
 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon, Rectangle
-from matplotlib.path import Path
+import argparse
+import importlib
+import hashlib
+import json
+import os
+import random
+import subprocess
 import time
+import traceback
 from dataclasses import dataclass
-from typing import List
+from datetime import datetime
+from typing import Dict, List, Sequence
+
+np = None
 
 print("="*70)
 print("2D MPM - A-SHAPED MAT FOUNDATION (Equivalent Width Method)")
@@ -35,10 +42,108 @@ LIU_DATA = {
     'Nc_theoretical': 5.14,
 }
 
+MODEL_VERSION = "1.0.0"
+DEFAULT_PARAMETER_GRID = [
+    {
+        "description": "baseline",
+        "rate": 0.01,
+        "target": 0.5,
+        "interval": 0.02,
+        "max_steps": 12000,
+    }
+]
+
 # For 2D plane strain, we need EQUIVALENT WIDTH
 # Equivalent width = Area / Length = 68.4 / 10 = 6.84 m
 EQUIVALENT_WIDTH = LIU_DATA['foundation_area'] / LIU_DATA['foundation_length']
 print(f"Equivalent foundation width for 2D: {EQUIVALENT_WIDTH:.2f} m")
+
+
+def get_commit_hash():
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def require_matplotlib():
+    spec = importlib.util.find_spec("matplotlib")
+    if spec is None:
+        raise ImportError(
+            "matplotlib is required for plotting. Install it with `pip install matplotlib`."
+        )
+    import matplotlib.pyplot as plt  # noqa: WPS433 (local import for optional dependency)
+
+    return plt
+
+
+def require_numpy():
+    global np
+
+    if np is None:
+        spec = importlib.util.find_spec("numpy")
+        if spec is None:
+            raise ImportError(
+                "numpy is required for simulations. Install it with `pip install numpy`."
+            )
+        np = importlib.import_module("numpy")
+    return np
+
+
+def hash_params(params: Dict) -> str:
+    return hashlib.sha1(json.dumps(params, sort_keys=True).encode()).hexdigest()
+
+
+def load_parameter_grid(grid_path: str | None) -> List[Dict]:
+    if grid_path is None:
+        return DEFAULT_PARAMETER_GRID
+    with open(grid_path, "r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    if not isinstance(data, list):
+        raise ValueError("Grid file must contain a list of parameter dictionaries")
+    return list(data)
+
+
+def parse_chunk(chunk_str: str | None, total: int) -> Sequence[int]:
+    if chunk_str is None:
+        return list(range(total))
+    try:
+        idx_str, total_str = chunk_str.split("/")
+        chunk_idx = int(idx_str)
+        chunk_total = int(total_str)
+    except ValueError as exc:
+        raise ValueError("Chunk must be in k/n format, e.g., 0/4") from exc
+    if chunk_idx < 0 or chunk_total <= 0 or chunk_idx >= chunk_total:
+        raise ValueError("Chunk values out of range")
+    chunk_size = (total + chunk_total - 1) // chunk_total
+    start = chunk_idx * chunk_size
+    end = min(start + chunk_size, total)
+    return list(range(start, end))
+
+
+def load_completed_hashes(log_path: str) -> Dict[str, Dict]:
+    if not os.path.exists(log_path):
+        return {}
+    completed: Dict[str, Dict] = {}
+    with open(log_path, "r", encoding="utf-8") as fp:
+        for line in fp:
+            try:
+                record = json.loads(line)
+                if record.get("status") == "success":
+                    completed[record["param_hash"]] = record
+            except json.JSONDecodeError:
+                continue
+    return completed
+
+
+def log_jsonl(log_path: str, record: Dict):
+    with open(log_path, "a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record) + "\n")
+
+
+def seed_all(seed: int):
+    require_numpy().random.seed(seed)
+    random.seed(seed)
 
 # ============================================================
 # MATERIAL POINT
@@ -62,6 +167,7 @@ class MaterialPoint:
     material_id: int  # 0=soil, 1=foundation
 
     def principal_stresses(self):
+        np = require_numpy()
         s_mean = (self.sxx + self.syy) / 2
         radius = np.sqrt(((self.sxx - self.syy) / 2)**2 + self.sxy**2)
         return s_mean + radius, s_mean - radius
@@ -72,6 +178,7 @@ class MaterialPoint:
 
 class MPM2D:
     def __init__(self, domain_x, domain_y, nx, ny, su, E, nu, rho):
+        require_numpy()
         # Domain
         self.x_min, self.x_max = domain_x
         self.y_min, self.y_max = domain_y
@@ -223,6 +330,7 @@ class MPM2D:
         soil = [(p.x, p.y) for p in self.particles if p.material_id == 0]
         found = [(p.x, p.y) for p in self.particles if p.material_id == 1]
 
+        plt = require_matplotlib()
         fig, ax = plt.subplots(figsize=(14, 8))
 
         if soil:
@@ -514,34 +622,34 @@ class MPM2D:
 # MAIN
 # ============================================================
 
-def main():
+def run_simulation(params: Dict, output_dir: str, param_hash: str):
+    require_numpy()
     print("\n" + "="*70)
-    print("SIMULATION SETUP")
+    print(f"SIMULATION SETUP ({params.get('description', param_hash)})")
     print("="*70)
 
-    # Material properties
-    su = LIU_DATA['soil_strength_su']
-    E = 500 * su
-    nu = 0.495
-    rho = LIU_DATA['soil_density']
+    su = params.get("su", LIU_DATA['soil_strength_su'])
+    E_multiplier = params.get("E_multiplier", 500)
+    E = params.get("E", E_multiplier * su)
+    nu = params.get("nu", 0.495)
+    rho = params.get("rho", LIU_DATA['soil_density'])
 
     print(f"Material: su={su}Pa, E={E/1000}kPa, nu={nu}, rho={rho}kg/m3")
 
     # Domain
-    # Width should be > 5 * foundation width to avoid boundary effects
-    foundation_width = EQUIVALENT_WIDTH  # 6.84 m
-    domain_width = 40.0  # ~6x foundation width
-    domain_height = 20.0
-    soil_surface = 15.0
+    foundation_width = params.get("foundation_width", EQUIVALENT_WIDTH)
+    domain_width = params.get("domain_width", 40.0)
+    domain_height = params.get("domain_height", 20.0)
+    soil_surface = params.get("soil_surface", 15.0)
 
     # Grid
-    nx, ny = 80, 40  # Refined grid
+    nx = params.get("nx", 80)
+    ny = params.get("ny", 40)
 
     print(f"Foundation width: {foundation_width:.2f} m")
     print(f"Domain: {domain_width}x{domain_height}m")
     print(f"Grid: {nx}x{ny}")
 
-    # Create solver
     mpm = MPM2D(
         domain_x=[0, domain_width],
         domain_y=[0, domain_height],
@@ -549,17 +657,15 @@ def main():
         su=su, E=E, nu=nu, rho=rho
     )
 
-    # Add soil
-    mpm.add_soil_block([0, domain_width], [0, soil_surface], ppc=4)
+    mpm.add_soil_block([0, domain_width], [0, soil_surface], ppc=params.get("soil_ppc", 4))
 
-    # Add strip foundation (centered)
     center_x = domain_width / 2
     mpm.add_strip_foundation(
         center_x=center_x,
         y_base=soil_surface,
         width=foundation_width,
-        thickness=0.5,
-        density=2500
+        thickness=params.get("foundation_thickness", 0.5),
+        density=params.get("foundation_density", 2500)
     )
 
     total = len(mpm.particles)
@@ -567,13 +673,10 @@ def main():
     found = len(mpm.foundation_indices)
     print(f"\nTotal particles: {total} ({soil} soil, {found} foundation)")
 
-    # Analytical validation
     print("\n" + "="*70)
     print("ANALYTICAL VALIDATION")
     print("="*70)
 
-    # Prandtl bearing capacity theory for strip foundation on undrained clay
-    # Q_ult = su * Nc * Area, where Nc = (2 + π) = 5.14 for undrained conditions
     q_prandtl = su * LIU_DATA['Nc_theoretical'] * LIU_DATA['foundation_area'] / 1000
     print(f"Prandtl theory (Nc=5.14): {q_prandtl:.0f} kN")
     print(f"Liu et al. FEM result:    {LIU_DATA['ultimate_load_test']:.0f} kN")
@@ -583,22 +686,19 @@ def main():
     print("  - Strain hardening or other material effects")
     print("  - Different failure mechanism")
 
-    # Run test
     settlements, loads, times = mpm.run_test(
-        rate=0.01,
-        target=0.5,
-        interval=0.02,
-        max_steps=12000
+        rate=params.get("rate", 0.01),
+        target=params.get("target", 0.5),
+        interval=params.get("interval", 0.02),
+        max_steps=params.get("max_steps", 12000)
     )
 
     if len(loads) == 0:
-        print("ERROR: No results!")
-        return None, [], []
+        raise RuntimeError("ERROR: No results!")
 
-    # Ultimate load
     V_ult = np.max(loads)
 
-    # Plot
+    plt = require_matplotlib()
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax1 = axes[0]
@@ -626,10 +726,10 @@ def main():
     ax2.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
-    plt.savefig('results.png', dpi=150)
-    plt.show()
+    figure_path = os.path.join(output_dir, f"results_{param_hash}.png")
+    plt.savefig(figure_path, dpi=150)
+    plt.close(fig)
 
-    # Summary
     print("\n" + "="*70)
     print("RESULTS")
     print("="*70)
@@ -647,8 +747,74 @@ def main():
     else:
         print("Check model parameters")
 
-    return mpm, settlements, loads
+    return {
+        "ultimate_load": float(V_ult),
+        "error_percent": float(error),
+        "figure": figure_path,
+    }
 
-# Run
-mpm, settlements, loads = main()
-print("\nCOMPLETE")
+
+def cli():
+    parser = argparse.ArgumentParser(description="Run MPM parameter grid")
+    parser.add_argument("--grid-file", help="JSON file with list of parameter dictionaries")
+    parser.add_argument("--output-dir", default="runs", help="Directory to store outputs and logs")
+    parser.add_argument("--chunk", help="Chunk spec k/n to subset grid for parallel runs")
+    parser.add_argument("--seed", type=int, default=0, help="Base random seed for reproducibility")
+    parser.add_argument("--model-version", default=MODEL_VERSION, help="Model version tag for metadata")
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    log_path = os.path.join(args.output_dir, "runs.jsonl")
+
+    parameter_grid = load_parameter_grid(args.grid_file)
+    indices = parse_chunk(args.chunk, len(parameter_grid))
+    completed = load_completed_hashes(log_path)
+
+    commit_hash = get_commit_hash()
+    print(f"Commit hash: {commit_hash}")
+    print(f"Model version: {args.model_version}")
+
+    for idx in indices:
+        params = parameter_grid[idx]
+        param_hash = hash_params(params)
+        if param_hash in completed:
+            print(f"Skipping completed param set {idx} ({param_hash})")
+            continue
+
+        seed = params.get("seed", args.seed)
+        seed_all(seed)
+        started_at = datetime.utcnow().isoformat() + "Z"
+        print(f"\nRunning param set {idx}/{len(parameter_grid)} | seed={seed}")
+        try:
+            result = run_simulation(params, args.output_dir, param_hash)
+            record = {
+                "status": "success",
+                "param_hash": param_hash,
+                "params": params,
+                "seed": seed,
+                "model_version": args.model_version,
+                "commit_hash": commit_hash,
+                "started_at": started_at,
+                "completed_at": datetime.utcnow().isoformat() + "Z",
+                **result,
+            }
+            log_jsonl(log_path, record)
+        except Exception as exc:
+            tb = traceback.format_exc()
+            record = {
+                "status": "failed",
+                "param_hash": param_hash,
+                "params": params,
+                "seed": seed,
+                "model_version": args.model_version,
+                "commit_hash": commit_hash,
+                "started_at": started_at,
+                "error": str(exc),
+                "traceback": tb,
+            }
+            log_jsonl(log_path, record)
+            print(f"Run failed for param set {idx}: {exc}")
+
+
+if __name__ == "__main__":
+    cli()
