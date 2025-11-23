@@ -385,6 +385,8 @@ class MPM2D:
         """
         Calculate bearing capacity using contact force integration
 
+        CORRECTED: Integrate pressure only at the interface, not through volume
+
         For 2D plane strain: Q = integral of contact pressure over width
         Result is force per unit length (kN/m)
 
@@ -397,36 +399,35 @@ class MPM2D:
         found_y = [self.particles[i].y for i in self.foundation_indices]
         found_x = [self.particles[i].x for i in self.foundation_indices]
         foundation_base = min(found_y)
+        foundation_width = max(found_x) - min(found_x)
         x_min_found = min(found_x)
         x_max_found = max(found_x)
 
-        # Contact zone
-        contact_depth = 1.5 * self.dy
+        # CRITICAL FIX: Only look at interface (single layer), not volume
+        # Interface thickness = one particle spacing
+        interface_thickness = 0.5 * self.dy
 
-        # Integrate contact pressure
-        total_pressure = 0
-        particle_count = 0
+        # Collect pressures at interface
+        interface_pressures = []
 
         for mp in self.particles:
             if mp.material_id == 0:  # Soil
-                # Check if below foundation
-                if (foundation_base - contact_depth < mp.y < foundation_base + 0.1 * self.dy):
+                # FIXED: Only particles at interface (not multiple layers!)
+                if (foundation_base - interface_thickness < mp.y < foundation_base):
                     # Check if within foundation x-extent
                     if x_min_found - 0.5*self.dx < mp.x < x_max_found + 0.5*self.dx:
                         # Contact pressure (compressive syy is negative)
                         pressure = -mp.syy
                         if pressure > 0:
-                            total_pressure += pressure
-                            particle_count += 1
+                            interface_pressures.append(pressure)
 
-        # Average pressure * foundation width = force per unit length
-        if particle_count > 0:
-            # Each soil particle represents a tributary width
-            ppc_1d = 2
-            dx_p = self.dx / ppc_1d
+        if len(interface_pressures) > 0:
+            # Average contact pressure at interface
+            avg_pressure = np.mean(interface_pressures)
 
-            # Sum of pressures * particle width
-            force_per_length = total_pressure * dx_p
+            # Force per unit length = average pressure * foundation width
+            # (In 2D plane strain, this gives force per unit out-of-plane depth)
+            force_per_length = avg_pressure * foundation_width
 
             return force_per_length
 
