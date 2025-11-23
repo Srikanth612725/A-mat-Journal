@@ -1,0 +1,5 @@
+Permutation importance (relative MSE increase):
+- su: 1.604
+- width: 0.289
+- rate: 0.016
+- thickness: 0.015
