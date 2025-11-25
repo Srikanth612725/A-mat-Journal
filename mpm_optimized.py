@@ -133,11 +133,10 @@ def tresca_return_mapping(sxx: float, syy: float, sxy: float, su: float) -> Tupl
 
     c2 = np.cos(theta)**2
     s2t = np.sin(theta)**2
-    cs = np.cos(theta) * np.sin(theta)
 
     sxx_new = s_mean + (s1_new - s_mean) * c2 + (s2_new - s_mean) * s2t
     syy_new = s_mean + (s1_new - s_mean) * s2t + (s2_new - s_mean) * c2
-    sxy_new = ((s1_new - s_mean) - (s2_new - s_mean)) * cs
+    sxy_new = sxy * scale  # FIX: Simply scale shear stress (same as original)
 
     return sxx_new, syy_new, sxy_new
 
