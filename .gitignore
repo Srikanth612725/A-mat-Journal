@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.log
+*.csv
+*.h5
+*.hdf5
+results_raw.parquet
+results_summary.parquet
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+# Plots and outputs (keep in outputs/ directory)
+*.png
+!outputs/*.png
+*.svg
+!outputs/*.svg
+*.pdf
+!outputs/*.pdf
+
+# Data files
+*.dat
+*.bin
