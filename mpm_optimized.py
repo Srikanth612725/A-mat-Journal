@@ -687,16 +687,24 @@ def run_optimized_validation(
         print("ERROR: No results!")
         return None
 
-    # Ultimate load
-    V_ult = np.max(loads)
+    # Ultimate load using Tangent Intersection Method (Liu et al. standard)
+    from tangent_method import tangent_intersection_method
+
+    tangent_result = tangent_intersection_method(settlements, loads, plot=False)
+    V_ult = tangent_result['Q_ult']
+    V_max = tangent_result['Q_max']
+    method_used = tangent_result['method']
+
     error_pct = abs(V_ult - LIU_DATA['ultimate_load_test']) / LIU_DATA['ultimate_load_test'] * 100
 
     print("\n" + "="*70)
     print("RESULTS")
     print("="*70)
-    print(f"Ultimate load (MPM):     {V_ult:.0f} kN")
+    print(f"Method used:             {method_used}")
+    print(f"Ultimate load (tangent): {V_ult:.0f} kN")
+    print(f"Maximum load (peak):     {V_max:.0f} kN")
     print(f"Target (Liu et al.):     {LIU_DATA['ultimate_load_test']} kN")
-    print(f"Error:                   {error_pct:.1f}%")
+    print(f"Error (tangent method):  {error_pct:.1f}%")
     print(f"Ratio (MPM/Theory):      {V_ult/q_prandtl:.2f}")
 
     if plot_results:
