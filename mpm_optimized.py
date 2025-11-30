@@ -516,8 +516,8 @@ class MPM2D_Optimized:
         x_min_found = min(found_x)
         x_max_found = max(found_x)
 
-        # Interface thickness
-        interface_thickness = 0.5 * self.dy
+        # Interface thickness (increased from 0.5 to 1.5 to capture more particles)
+        interface_thickness = 1.5 * self.dy
 
         # Collect interface pressures with weights
         interface_pressures = []
