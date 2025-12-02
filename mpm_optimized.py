@@ -365,6 +365,19 @@ class MPM2D_Optimized:
             print(f"  Width: {width:.2f} m, Thickness: {thickness:.2f} m")
             print(f"  Centroid: ({np.mean(fx):.2f}, {self.foundation_y0:.2f}) m")
 
+    def set_foundation_velocity(self, vx, vy):
+        """
+        Set prescribed velocity for foundation particles
+
+        Parameters:
+        -----------
+        vx : float
+            Horizontal velocity (m/s)
+        vy : float
+            Vertical velocity (m/s, negative = downward)
+        """
+        self.foundation_velocity = vy
+
     def get_shape_functions(self, mp):
         """Get shape functions for material point"""
         i = int((mp.x - self.x_min) / self.dx)

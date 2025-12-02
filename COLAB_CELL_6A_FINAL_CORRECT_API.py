@@ -116,11 +116,22 @@ checkpoint_file = f'{drive_dir}/checkpoint.csv'
 
 if os.path.exists(checkpoint_file):
     df_completed = pd.read_csv(checkpoint_file)
-    completed_ids = set(df_completed['run_id'].values)
+
+    # ✅ FIX: Only load SUCCESSFUL runs, re-attempt failed ones
+    if 'status' in df_completed.columns:
+        df_successful = df_completed[df_completed['status'] == 'SUCCESS']
+        completed_ids = set(df_successful['run_id'].values)
+    else:
+        # Backwards compatibility: assume all are successful if no status column
+        completed_ids = set(df_completed['run_id'].values)
+
     df_remaining = df[~df['run_id'].isin(completed_ids)]
 
     print(f"⚠️  CHECKPOINT FOUND!")
-    print(f"   Completed: {len(completed_ids)} runs")
+    print(f"   Successful: {len(completed_ids)} runs")
+    if 'status' in df_completed.columns:
+        failed_count = len(df_completed[df_completed['status'] == 'FAILED'])
+        print(f"   Failed (will retry): {failed_count} runs")
     print(f"   Remaining: {len(df_remaining)} runs")
 
     all_results = df_completed.to_dict('records')
@@ -231,9 +242,8 @@ for idx_orig, row in df_to_run.iterrows():
         loads = []
         step = 0
 
-        # Set foundation velocity
-        for i in mpm.foundation_indices:
-            mpm.particles[i].vy = -rate
+        # ✅ FIX: Set foundation velocity using the correct API
+        mpm.set_foundation_velocity(0, -rate)  # (vx=0, vy=-rate, negative = downward)
 
         run_start = time.time()
 
