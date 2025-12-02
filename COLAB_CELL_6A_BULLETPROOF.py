@@ -72,12 +72,22 @@ def run_tier1_with_drive_backup(df):
     if os.path.exists(checkpoint_file):
         print(f"\n⚠️  CHECKPOINT FOUND!")
         df_completed = pd.read_csv(checkpoint_file)
-        completed_ids = set(df_completed['run_id'].values)
+
+        # ✅ FIX: Only load SUCCESSFUL runs, re-attempt failed ones
+        if 'status' in df_completed.columns:
+            df_successful = df_completed[df_completed['status'] == 'SUCCESS']
+            completed_ids = set(df_successful['run_id'].values)
+        else:
+            # Backwards compatibility: assume all are successful if no status column
+            completed_ids = set(df_completed['run_id'].values)
 
         # Filter out completed runs
         df_remaining = df[~df['run_id'].isin(completed_ids)]
 
-        print(f"   Already completed: {len(completed_ids)} runs")
+        print(f"   Successful: {len(completed_ids)} runs")
+        if 'status' in df_completed.columns:
+            failed_count = len(df_completed[df_completed['status'] == 'FAILED'])
+            print(f"   Failed (will retry): {failed_count} runs")
         print(f"   Remaining: {len(df_remaining)} runs")
         print(f"\n➡️  Resuming from where you left off!")
 
