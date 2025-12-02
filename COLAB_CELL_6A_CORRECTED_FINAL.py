@@ -232,8 +232,8 @@ for idx_orig, row in df_to_run.iterrows():
         loads = []
         step = 0
 
-        # Set foundation velocity
-        mpm.set_foundation_velocity(0, -rate)
+        # ✅ FIX: Set foundation velocity directly (works with all versions)
+        mpm.foundation_velocity = -rate  # Negative = downward
 
         run_start = time.time()
 
