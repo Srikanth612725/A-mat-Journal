@@ -529,8 +529,9 @@ class MPM2D_Optimized:
         x_min_found = min(found_x)
         x_max_found = max(found_x)
 
-        # Interface thickness (increased from 0.5 to 1.5 to capture more particles)
-        interface_thickness = 1.5 * self.dy
+        # Interface thickness - FIXED: Reduced from 1.5 to 0.25 to sample just 1 particle layer
+        # Old value (1.5) was capturing 1m zone and over-sampling stress, causing 4× overprediction
+        interface_thickness = 0.25 * self.dy
 
         # Collect interface pressures with weights
         interface_pressures = []
@@ -550,6 +551,42 @@ class MPM2D_Optimized:
         if len(interface_pressures) > 0:
             avg_pressure = np.average(interface_pressures, weights=interface_weights)
             force_per_length = avg_pressure * foundation_width
+            return force_per_length
+
+        return 0.0
+
+    def calculate_bearing_capacity_v2(self):
+        """
+        Calculate bearing capacity using foundation reaction forces (PROPER METHOD)
+
+        This method directly sums the vertical reaction forces acting on the
+        foundation particles from the grid, which gives the true bearing capacity.
+
+        This is more accurate than measuring stress in soil below foundation.
+        """
+        if not self.foundation_indices:
+            return 0.0
+
+        # Get foundation dimensions
+        found_x = [self.particles[i].x for i in self.foundation_indices]
+        foundation_width = max(found_x) - min(found_x)
+
+        # Sum reaction forces from grid on foundation particles
+        total_reaction = 0.0
+        for idx in self.foundation_indices:
+            mp = self.particles[idx]
+
+            # Get shape functions for this foundation particle
+            nodes, N, _, _ = self.get_shape_functions(mp)
+
+            # Sum grid forces weighted by shape functions
+            for k, node in enumerate(nodes):
+                # Vertical force from grid on this particle (negative = upward reaction)
+                total_reaction += abs(N[k] * self.grid_fy[node])
+
+        # Bearing capacity per unit out-of-plane length (kN/m for 2D)
+        if foundation_width > 0:
+            force_per_length = total_reaction
             return force_per_length
 
         return 0.0
