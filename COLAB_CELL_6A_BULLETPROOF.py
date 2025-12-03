@@ -177,7 +177,7 @@ def run_tier1_with_drive_backup(df):
                 settlement = mpm.foundation_y0 - current_y
 
                 if step % record_every == 0:
-                    q = mpm.calculate_bearing_capacity() / 1000
+                    q = mpm.calculate_bearing_capacity_v2() / 1000  # ✅ FIX: Use v2 (reaction forces)
                     settlements.append(settlement)
                     loads.append(q)
 
@@ -187,7 +187,7 @@ def run_tier1_with_drive_backup(df):
                               f"q={q:6.0f} kN/m | {elapsed:.0f}s")
 
                 if settlement >= target:
-                    q = mpm.calculate_bearing_capacity() / 1000
+                    q = mpm.calculate_bearing_capacity_v2() / 1000  # ✅ FIX: Use v2 (reaction forces)
                     settlements.append(settlement)
                     loads.append(q)
                     print(f"   ✓ Target settlement {target*1000:.0f}mm reached at step {step}")
