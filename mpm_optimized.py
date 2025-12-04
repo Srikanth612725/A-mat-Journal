@@ -591,6 +591,66 @@ class MPM2D_Optimized:
 
         return 0.0
 
+    def calculate_bearing_capacity_v3(self):
+        """
+        Calculate bearing capacity from SOIL CONTACT STRESS (v3 - CORRECT METHOD)
+
+        Measures vertical stress in thin layer of SOIL particles immediately
+        below the foundation. This is the proper method for bearing capacity.
+
+        Key improvements over v2:
+        - Measures stress in SOIL (not grid forces on foundation)
+        - Uses VERY thin interface (0.1 × dy ≈ 1 particle layer)
+        - Uses particle stress (σyy), not grid forces
+        - More stable and physically correct
+        """
+        if not self.foundation_indices:
+            return 0.0
+
+        # Get foundation boundaries
+        found_x = [self.particles[i].x for i in self.foundation_indices]
+        found_y = [self.particles[i].y for i in self.foundation_indices]
+
+        x_min_found = min(found_x)
+        x_max_found = max(found_x)
+        y_min_found = min(found_y)  # Bottom of foundation
+
+        foundation_width = x_max_found - x_min_found
+
+        # Define VERY thin interface layer (just below foundation)
+        interface_thickness = 0.10 * self.dy  # ~0.067m ≈ 1 particle layer
+
+        # Find soil particles in interface zone
+        interface_particles = []
+        for i, mp in enumerate(self.particles):
+            if mp.material_id == 0:  # Soil only
+                # Horizontal extent: under foundation
+                in_x_range = (x_min_found <= mp.x <= x_max_found)
+
+                # Vertical extent: thin layer just below foundation
+                in_y_range = (y_min_found - interface_thickness <= mp.y <= y_min_found)
+
+                if in_x_range and in_y_range:
+                    interface_particles.append(i)
+
+        if len(interface_particles) == 0:
+            # No soil particles in interface - foundation may have penetrated too far
+            return 0.0
+
+        # Average vertical stress (σyy) in interface zone
+        total_stress = 0.0
+        for idx in interface_particles:
+            mp = self.particles[idx]
+            # Vertical stress (compression = negative in our code)
+            total_stress += abs(mp.stress_yy)
+
+        bearing_pressure = total_stress / len(interface_particles)
+
+        # Convert to force per unit out-of-plane length
+        bearing_capacity = bearing_pressure * foundation_width
+
+        return bearing_capacity
+
     def run_test(self, rate=0.01, target=0.5, interval=0.02, max_steps=10000):
         """Run bearing capacity test"""
         print("\n" + "="*70)
