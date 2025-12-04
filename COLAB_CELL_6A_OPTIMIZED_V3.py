@@ -1,14 +1,17 @@
 """
-OPTIMIZED TIER 1 - v3 Bearing Capacity Method
+OPTIMIZED TIER 1 - CONTACT METHOD (Final Fix)
 ==============================================
 
 CRITICAL FIXES:
-1. Uses calculate_bearing_capacity_v3() - measures SOIL contact stress
+1. Uses calculate_bearing_capacity_contact() - DYNAMIC CONTACT DETECTION
 2. Faster penetration: 0.20 m/s (4× faster than before)
 3. Larger timestep: 0.0002s (2× larger, stable)
 4. Deeper penetration: 500mm target (matches Liu's scale)
 5. Non-linear recording: Dense early (every 5mm), sparse later (every 25mm)
 6. Diagnostic output: Check for plateau
+
+Contact method finds soil particles currently touching foundation,
+uses their stress (where physics happens), adapts as foundation moves.
 
 Expected result: ~154 kN/m with < 20% error
 """
@@ -246,8 +249,8 @@ for run_idx, (idx, row) in enumerate(df_remaining.iterrows()):
 
             # Non-linear recording
             if non_linear_recording(step, settlement, rate, dt):
-                # ✅ USE V3 METHOD!
-                q = mpm.calculate_bearing_capacity_v3() / 1000  # kN/m
+                # ✅ USE CONTACT METHOD!
+                q = mpm.calculate_bearing_capacity_contact() / 1000  # kN/m
 
                 settlements.append(settlement)
                 loads.append(q)
@@ -261,7 +264,7 @@ for run_idx, (idx, row) in enumerate(df_remaining.iterrows()):
 
             # Check if target reached
             if settlement >= target:
-                q = mpm.calculate_bearing_capacity_v3() / 1000
+                q = mpm.calculate_bearing_capacity_contact() / 1000
                 settlements.append(settlement)
                 loads.append(q)
                 print(f"   ✓ Target {target*1000:.0f}mm reached at step {step}")
