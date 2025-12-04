@@ -142,7 +142,7 @@ from mpm_optimized import MPM2D_Optimized
 from standard_capacity_methods import (
     davisson_offset_method,
     chin_konder_method,
-    brinch_hansen_method,
+    brinch_hansen_80_method,
     fuller_hoy_method
 )
 
