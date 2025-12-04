@@ -248,7 +248,7 @@ for idx_orig, row in df_to_run.iterrows():
 
             # Record data
             if step % record_every == 0:
-                q = mpm.calculate_bearing_capacity() / 1000  # Convert to kN/m
+                q = mpm.calculate_bearing_capacity_v2() / 1000  # ✅ FIX: Use v2 (reaction forces)
                 settlements.append(settlement)
                 loads.append(q)
 
@@ -259,7 +259,7 @@ for idx_orig, row in df_to_run.iterrows():
 
             # Check if target reached
             if settlement >= target:
-                q = mpm.calculate_bearing_capacity() / 1000
+                q = mpm.calculate_bearing_capacity_v2() / 1000  # ✅ FIX: Use v2 (reaction forces)
                 settlements.append(settlement)
                 loads.append(q)
                 print(f"   ✓ Target {target*1000:.0f}mm reached at step {step}")
