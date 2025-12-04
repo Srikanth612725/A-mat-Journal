@@ -651,6 +651,74 @@ class MPM2D_Optimized:
 
         return bearing_capacity
 
+    def calculate_bearing_capacity_contact(self):
+        """
+        Calculate bearing capacity using CONTACT DETECTION (PROPER METHOD)
+
+        Based on Liu et al. (2022) FEM approach:
+        - Find soil particles currently in CONTACT with foundation
+        - Sum their stress contributions
+        - This adapts as foundation moves (particles in contact change)
+
+        Key difference from v1/v3:
+        - Not a fixed zone (which becomes empty)
+        - Dynamic contact detection each timestep
+        - Uses stress from particles actually touching foundation
+        """
+        if not self.foundation_indices:
+            return 0.0
+
+        # Foundation boundaries
+        found_x = [self.particles[i].x for i in self.foundation_indices]
+        found_y = [self.particles[i].y for i in self.foundation_indices]
+
+        x_min = min(found_x)
+        x_max = max(found_x)
+        y_bottom = min(found_y)  # Bottom surface of foundation
+
+        foundation_width = x_max - x_min
+
+        # Contact detection distance (particles within this distance are "in contact")
+        # Use particle spacing as threshold
+        particle_spacing = self.dy / 4  # Approximate particle spacing (dy/ppc_1d)
+        contact_distance = 1.5 * particle_spacing  # Generous contact threshold
+
+        # Find soil particles in contact with foundation bottom
+        contact_particles = []
+        for i, mp in enumerate(self.particles):
+            if mp.material_id == 0:  # Soil only
+                # Check if horizontally under foundation
+                if x_min <= mp.x <= x_max:
+                    # Check if vertically close to foundation bottom
+                    # Distance from particle to foundation base
+                    dist_to_bottom = abs(mp.y - y_bottom)
+
+                    if dist_to_bottom <= contact_distance:
+                        contact_particles.append(i)
+
+        if len(contact_particles) == 0:
+            # No contact particles found
+            return 0.0
+
+        # Calculate bearing capacity from contact particles
+        # Method: Sum (stress × volume / contact_distance) for each contact particle
+        # This effectively integrates stress over the contact surface
+
+        total_force = 0.0
+        for idx in contact_particles:
+            mp = self.particles[idx]
+
+            # Vertical stress in soil particle (compression = negative)
+            stress_yy = abs(mp.stress_yy)
+
+            # Force contribution from this particle
+            # Approximate as: stress × (particle volume / characteristic length)
+            force_contribution = stress_yy * mp.volume / contact_distance
+
+            total_force += force_contribution
+
+        return total_force
+
     def run_test(self, rate=0.01, target=0.5, interval=0.02, max_steps=10000):
         """Run bearing capacity test"""
         print("\n" + "="*70)
