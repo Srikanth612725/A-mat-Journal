@@ -206,8 +206,8 @@ for run_idx, (idx, row) in enumerate(df_remaining.iterrows()):
 
         # Add foundation
         mpm.add_strip_foundation(
-            x_center=15.0,
-            y_center=15.0,
+            center_x=15.0,
+            y_base=15.0,
             width=row['width_m'],
             thickness=0.5,
             density=2500
